@@ -63,4 +63,10 @@ impl IntoResponse for AppError {
 
         (status, body).into_response()
     }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(err: anyhow::Error) -> Self {
+        AppError::Internal(err.to_string())
+    }
 } 

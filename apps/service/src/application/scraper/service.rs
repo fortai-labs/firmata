@@ -139,12 +139,11 @@ impl ScraperService {
     }
     
     pub async fn list_jobs(&self, limit: i64, offset: i64) -> Result<Vec<Job>> {
-        let jobs = sqlx::query_as!(
-            Job,
+        let rows = sqlx::query!(
             r#"
             SELECT 
                 id, config_id, 
-                status as "status: JobStatus", 
+                status, 
                 created_at, updated_at, started_at, completed_at, 
                 error_message, pages_crawled, pages_failed, pages_skipped, 
                 next_run_at, worker_id, 
@@ -158,6 +157,34 @@ impl ScraperService {
         )
         .fetch_all(&self.db_pool)
         .await?;
+        
+        let jobs = rows.into_iter().map(|row| {
+            let status = match row.status.as_str() {
+                "pending" => JobStatus::Pending,
+                "running" => JobStatus::Running,
+                "completed" => JobStatus::Completed,
+                "failed" => JobStatus::Failed,
+                "cancelled" => JobStatus::Cancelled,
+                _ => JobStatus::Unknown,
+            };
+            
+            Job {
+                id: row.id,
+                config_id: row.config_id,
+                status,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                started_at: row.started_at,
+                completed_at: row.completed_at,
+                error_message: row.error_message,
+                pages_crawled: row.pages_crawled,
+                pages_failed: row.pages_failed,
+                pages_skipped: row.pages_skipped,
+                next_run_at: row.next_run_at,
+                worker_id: row.worker_id,
+                metadata: row.metadata,
+            }
+        }).collect();
         
         Ok(jobs)
     }

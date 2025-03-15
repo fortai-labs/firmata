@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use crate::domain::page::Page;
 use crate::infrastructure::storage::s3_client::S3StorageClient;
+use crate::infrastructure::storage::s3_client::StorageClient;
 use crate::utils::error::AppError;
+use crate::api::routes::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct ListPagesQuery {
@@ -21,7 +23,7 @@ pub struct ListPagesQuery {
 }
 
 pub async fn list_pages(
-    State(db_pool): State<PgPool>,
+    State(state): State<AppState>,
     Query(params): Query<ListPagesQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(10);
@@ -50,12 +52,10 @@ pub async fn list_pages(
         query.push_str(&conditions.join(" AND "));
     }
     
-    query.push_str(" ORDER BY crawled_at DESC LIMIT $1 OFFSET $2");
+    query.push_str(&format!(" ORDER BY crawled_at DESC LIMIT {} OFFSET {}", limit, offset));
     
     let pages = sqlx::query_as::<_, Page>(&query)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&db_pool)
+        .fetch_all(&state.db_pool)
         .await
         .map_err(AppError::from)?;
     
@@ -70,24 +70,22 @@ pub async fn list_pages(
 }
 
 pub async fn get_page(
-    State(db_pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let page = sqlx::query_as!(
-        Page,
+    let page = sqlx::query_as::<_, Page>(
         r#"
-        SELECT 
-            id, job_id, url, normalized_url, content_hash,
-            http_status, http_headers as "http_headers: serde_json::Value",
-            crawled_at, html_storage_path, markdown_storage_path,
-            title, metadata as "metadata: serde_json::Value",
-            error_message, depth, parent_url
+        SELECT id, job_id, url, normalized_url, content_hash, 
+               http_status, http_headers as "http_headers: serde_json::Value", 
+               crawled_at, html_storage_path, markdown_storage_path, 
+               title, metadata as "metadata: serde_json::Value", 
+               error_message, depth, parent_url 
         FROM pages
         WHERE id = $1
-        "#,
-        id
+        "#
     )
-    .fetch_optional(&db_pool)
+    .bind(id)
+    .fetch_optional(&state.db_pool)
     .await
     .map_err(AppError::from)?
     .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
@@ -106,35 +104,35 @@ pub async fn get_page(
 }
 
 pub async fn get_page_html(
-    State(db_pool): State<PgPool>,
-    State(storage_client): State<Arc<S3StorageClient>>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get the page
-    let page = sqlx::query_as!(
-        Page,
+    // Get the page from the database
+    let page = sqlx::query_as::<_, Page>(
         r#"
-        SELECT 
-            id, job_id, url, normalized_url, content_hash,
-            http_status, http_headers as "http_headers: serde_json::Value",
-            crawled_at, html_storage_path, markdown_storage_path,
-            title, metadata as "metadata: serde_json::Value",
-            error_message, depth, parent_url
+        SELECT id, job_id, url, normalized_url, content_hash, 
+               http_status, http_headers as "http_headers: serde_json::Value", 
+               crawled_at, html_storage_path, markdown_storage_path, 
+               title, metadata as "metadata: serde_json::Value", 
+               error_message, depth, parent_url 
         FROM pages
         WHERE id = $1
-        "#,
-        id
+        "#
     )
-    .fetch_optional(&db_pool)
+    .bind(id)
+    .fetch_optional(&state.db_pool)
     .await
     .map_err(AppError::from)?
     .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
     
-    // Get the HTML content
-    let html_path = page.html_storage_path
-        .ok_or_else(|| AppError::NotFound("HTML content not available".to_string()))?;
+    // Check if HTML is available
+    if page.html_storage_path.is_none() {
+        return Err(AppError::NotFound("HTML content not available for this page".to_string()));
+    }
     
-    let html_content = storage_client.get_object(&html_path).await?;
+    // Get the HTML content from S3
+    let html_content = state.storage_client.get_object(page.html_storage_path.unwrap().as_str()).await
+        .map_err(|e| AppError::Internal(format!("Failed to retrieve HTML content: {}", e)))?;
     
     let response = serde_json::json!({
         "content": html_content,
@@ -152,35 +150,35 @@ pub async fn get_page_html(
 }
 
 pub async fn get_page_markdown(
-    State(db_pool): State<PgPool>,
-    State(storage_client): State<Arc<S3StorageClient>>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get the page
-    let page = sqlx::query_as!(
-        Page,
+    // Get the page from the database
+    let page = sqlx::query_as::<_, Page>(
         r#"
-        SELECT 
-            id, job_id, url, normalized_url, content_hash,
-            http_status, http_headers as "http_headers: serde_json::Value",
-            crawled_at, html_storage_path, markdown_storage_path,
-            title, metadata as "metadata: serde_json::Value",
-            error_message, depth, parent_url
+        SELECT id, job_id, url, normalized_url, content_hash, 
+               http_status, http_headers as "http_headers: serde_json::Value", 
+               crawled_at, html_storage_path, markdown_storage_path, 
+               title, metadata as "metadata: serde_json::Value", 
+               error_message, depth, parent_url 
         FROM pages
         WHERE id = $1
-        "#,
-        id
+        "#
     )
-    .fetch_optional(&db_pool)
+    .bind(id)
+    .fetch_optional(&state.db_pool)
     .await
     .map_err(AppError::from)?
     .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
     
-    // Get the Markdown content
-    let markdown_path = page.markdown_storage_path
-        .ok_or_else(|| AppError::NotFound("Markdown content not available".to_string()))?;
+    // Check if Markdown is available
+    if page.markdown_storage_path.is_none() {
+        return Err(AppError::NotFound("Markdown content not available for this page".to_string()));
+    }
     
-    let markdown_content = storage_client.get_object(&markdown_path).await?;
+    // Get the Markdown content from S3
+    let markdown_content = state.storage_client.get_object(page.markdown_storage_path.unwrap().as_str()).await
+        .map_err(|e| AppError::Internal(format!("Failed to retrieve Markdown content: {}", e)))?;
     
     let response = serde_json::json!({
         "content": markdown_content,

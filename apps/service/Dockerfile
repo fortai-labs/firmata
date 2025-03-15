@@ -1,3 +1,14 @@
+FROM rust:1.76 as builder
+
+# Create app directory
+WORKDIR /app
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN cargo build --release
+
 FROM debian:bullseye-slim
 
 # Install dependencies
@@ -9,12 +20,12 @@ RUN apt-get update && apt-get install -y \
 # Create app directory
 WORKDIR /app
 
-# Copy binaries and configuration
-COPY scraper-service /app/scraper-service
-COPY migrate /app/migrate
-COPY config/ /app/config/
-COPY .env.example /app/.env.example
-COPY README.md /app/README.md
+# Copy binaries and configuration from builder
+COPY --from=builder /app/target/release/scraper-service /app/scraper-service
+COPY --from=builder /app/target/release/migrate /app/migrate
+COPY --from=builder /app/config/ /app/config/
+COPY --from=builder /app/.env.example /app/.env.example
+COPY --from=builder /app/README.md /app/README.md
 
 # Make binaries executable
 RUN chmod +x /app/scraper-service /app/migrate

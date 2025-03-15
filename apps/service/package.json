@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "cargo watch -x run",
+    "dev": "cargo run --bin scraper-service",
     "build": "cargo build --release",
     "test": "cargo test",
     "lint": "cargo clippy",

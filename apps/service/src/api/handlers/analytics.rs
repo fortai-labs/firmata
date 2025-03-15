@@ -3,11 +3,12 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::utils::error::AppError;
+use crate::api::routes::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct JobStatsQuery {
@@ -42,7 +43,7 @@ pub struct ConfigStats {
 }
 
 pub async fn get_job_stats(
-    State(db_pool): State<PgPool>,
+    State(state): State<AppState>,
     Query(params): Query<JobStatsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let mut query = "
@@ -81,13 +82,21 @@ pub async fn get_job_stats(
     
     query.push_str(" GROUP BY j.id ORDER BY j.started_at DESC");
     
-    let job_stats = sqlx::query_as!(
-        JobStats,
-        &query
-    )
-    .fetch_all(&db_pool)
-    .await
-    .map_err(AppError::from)?;
+    let job_stats = sqlx::query(&query)
+        .map(|row: sqlx::postgres::PgRow| JobStats {
+            job_id: row.get("job_id"),
+            config_id: row.get("config_id"),
+            start_time: row.get("start_time"),
+            end_time: row.get("end_time"),
+            status: row.get("status"),
+            total_pages: row.get("total_pages"),
+            successful_pages: row.get("successful_pages"),
+            failed_pages: row.get("failed_pages"),
+            avg_page_time_ms: row.get("avg_page_time_ms"),
+        })
+        .fetch_all(&state.db_pool)
+        .await
+        .map_err(AppError::from)?;
     
     let response = serde_json::json!({
         "job_stats": job_stats,
@@ -100,10 +109,9 @@ pub async fn get_job_stats(
 }
 
 pub async fn get_config_stats(
-    State(db_pool): State<PgPool>,
+    State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let config_stats = sqlx::query_as!(
-        ConfigStats,
+    let config_stats = sqlx::query(
         r#"
         SELECT 
             c.id as config_id,
@@ -121,7 +129,17 @@ pub async fn get_config_stats(
         ORDER BY last_job_time DESC NULLS LAST
         "#
     )
-    .fetch_all(&db_pool)
+    .map(|row: sqlx::postgres::PgRow| ConfigStats {
+        config_id: row.get("config_id"),
+        name: row.get("name"),
+        total_jobs: row.get("total_jobs"),
+        total_pages: row.get("total_pages"),
+        successful_pages: row.get("successful_pages"),
+        failed_pages: row.get("failed_pages"),
+        avg_job_time_seconds: row.get("avg_job_time_seconds"),
+        last_job_time: row.get("last_job_time"),
+    })
+    .fetch_all(&state.db_pool)
     .await
     .map_err(AppError::from)?;
     
@@ -136,12 +154,13 @@ pub async fn get_config_stats(
 }
 
 pub async fn get_job_timeline(
-    State(db_pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Check if the job exists
-    let job_exists = sqlx::query!("SELECT id FROM jobs WHERE id = $1", job_id)
-        .fetch_optional(&db_pool)
+    let job_exists = sqlx::query("SELECT id FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_optional(&state.db_pool)
         .await
         .map_err(AppError::from)?
         .is_some();
@@ -151,7 +170,7 @@ pub async fn get_job_timeline(
     }
     
     // Get the timeline data
-    let timeline_data = sqlx::query!(
+    let timeline_data = sqlx::query(
         r#"
         SELECT 
             crawled_at as timestamp,
@@ -162,15 +181,15 @@ pub async fn get_job_timeline(
         FROM pages
         WHERE job_id = $1
         ORDER BY crawled_at ASC
-        "#,
-        job_id
+        "#
     )
-    .fetch_all(&db_pool)
+    .bind(job_id)
+    .fetch_all(&state.db_pool)
     .await
     .map_err(AppError::from)?;
     
     // Get job details
-    let job = sqlx::query!(
+    let job = sqlx::query(
         r#"
         SELECT 
             id,
@@ -180,28 +199,28 @@ pub async fn get_job_timeline(
             completed_at
         FROM jobs
         WHERE id = $1
-        "#,
-        job_id
+        "#
     )
-    .fetch_one(&db_pool)
+    .bind(job_id)
+    .fetch_one(&state.db_pool)
     .await
     .map_err(AppError::from)?;
     
     let response = serde_json::json!({
         "job": {
-            "id": job.id,
-            "config_id": job.config_id,
-            "status": job.status,
-            "started_at": job.started_at,
-            "completed_at": job.completed_at
+            "id": job.get::<Uuid, _>("id"),
+            "config_id": job.get::<Uuid, _>("config_id"),
+            "status": job.get::<i32, _>("status"),
+            "started_at": job.get::<Option<DateTime<Utc>>, _>("started_at"),
+            "completed_at": job.get::<Option<DateTime<Utc>>, _>("completed_at")
         },
         "timeline": timeline_data.iter().map(|entry| {
             serde_json::json!({
-                "timestamp": entry.timestamp,
-                "url": entry.url,
-                "http_status": entry.http_status,
-                "error_message": entry.error_message,
-                "depth": entry.depth
+                "timestamp": entry.get::<DateTime<Utc>, _>("timestamp"),
+                "url": entry.get::<String, _>("url"),
+                "http_status": entry.get::<i32, _>("http_status"),
+                "error_message": entry.get::<Option<String>, _>("error_message"),
+                "depth": entry.get::<i32, _>("depth")
             })
         }).collect::<Vec<_>>(),
         "_links": {

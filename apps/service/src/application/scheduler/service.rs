@@ -14,6 +14,7 @@ use crate::domain::job::Job;
 use crate::domain::scraper_config::ScraperConfig;
 use crate::infrastructure::queue::redis_queue::{JobQueue, RedisJobQueue};
 use crate::utils::error::AppError;
+use crate::domain::job::JobStatus;
 
 pub struct SchedulerService {
     db_pool: PgPool,

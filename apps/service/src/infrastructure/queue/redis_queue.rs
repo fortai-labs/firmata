@@ -74,7 +74,7 @@ impl JobQueue for RedisJobQueue {
         let result: Option<String> = conn.brpoplpush(
             format!("queue:{}", queue),
             format!("processing:{}", queue),
-            DEFAULT_POLL_INTERVAL as usize
+            DEFAULT_POLL_INTERVAL as f64  // Convert to f64 for brpoplpush
         ).await.map_err(|e| AppError::Redis(e.to_string()))?;
         
         if let Some(job_data) = result {
@@ -85,7 +85,7 @@ impl JobQueue for RedisJobQueue {
             conn.set_ex(
                 format!("job:{}:{}", queue, job_id),
                 &job_data,
-                self.visibility_timeout as usize
+                self.visibility_timeout as u64  // Convert to u64 for set_ex
             ).await.map_err(|e| AppError::Redis(e.to_string()))?;
             
             // Deserialize the job data

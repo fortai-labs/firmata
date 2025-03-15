@@ -1,14 +1,17 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use sqlx::Type;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum JobStatus {
     Pending,
     Running,
     Completed,
     Failed,
     Cancelled,
+    Unknown,
 }
 
 impl ToString for JobStatus {
@@ -19,6 +22,35 @@ impl ToString for JobStatus {
             JobStatus::Completed => "completed".to_string(),
             JobStatus::Failed => "failed".to_string(),
             JobStatus::Cancelled => "cancelled".to_string(),
+            JobStatus::Unknown => "unknown".to_string(),
+        }
+    }
+}
+
+impl TryFrom<i32> for JobStatus {
+    type Error = ();
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(JobStatus::Pending),
+            1 => Ok(JobStatus::Running),
+            2 => Ok(JobStatus::Completed),
+            3 => Ok(JobStatus::Failed),
+            4 => Ok(JobStatus::Cancelled),
+            _ => Ok(JobStatus::Unknown),
+        }
+    }
+}
+
+impl From<JobStatus> for i32 {
+    fn from(status: JobStatus) -> Self {
+        match status {
+            JobStatus::Pending => 0,
+            JobStatus::Running => 1,
+            JobStatus::Completed => 2,
+            JobStatus::Failed => 3,
+            JobStatus::Cancelled => 4,
+            JobStatus::Unknown => 5,
         }
     }
 }

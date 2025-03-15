@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use tonic::transport::Channel;
 
-use crate::config::settings::MarkdownService as MarkdownServiceConfig;
+use crate::config::settings::Grpc;
 use crate::utils::error::AppError;
 
 // Include the generated code
@@ -15,14 +15,15 @@ use markdown::{
     ConversionRequest,
 };
 
+#[derive(Clone)]
 pub struct MarkdownClient {
     client: MarkdownConverterClient<Channel>,
 }
 
 impl MarkdownClient {
-    pub async fn new(config: &MarkdownServiceConfig) -> Result<Self> {
+    pub async fn new(config: &Grpc) -> Result<Self> {
         // Connect to the server
-        let channel = Channel::from_shared(config.url.clone())
+        let channel = Channel::from_shared(config.markdown_service_url.clone())
             .map_err(|e| AppError::MarkdownService(format!("Invalid URL: {}", e)))?
             .connect()
             .await
@@ -35,23 +36,26 @@ impl MarkdownClient {
     }
     
     pub async fn convert_html_to_markdown(
-        &mut self,
+        &self,
         html_content: &str,
         url: &str,
         metadata: HashMap<String, String>,
     ) -> Result<(String, Vec<String>, HashMap<String, String>)> {
         // Create the request
-        let request = tonic::Request::new(ConversionRequest {
+        let request = ConversionRequest {
             html_content: html_content.to_string(),
             url: url.to_string(),
             metadata,
-        });
+        };
+        
+        // Clone the client for this request
+        let mut client = self.client.clone();
         
         // Send the request
-        let response = self.client
+        let response = client
             .convert_html_to_markdown(request)
             .await
-            .map_err(|e| AppError::MarkdownService(format!("Conversion failed: {}", e)))?;
+            .map_err(|e| AppError::MarkdownService(format!("Failed to convert HTML to Markdown: {}", e)))?;
         
         let response = response.into_inner();
         

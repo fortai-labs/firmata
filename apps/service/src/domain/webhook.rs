@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use sqlx::{FromRow, postgres::PgRow, Row};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WebhookEventType {
@@ -57,6 +58,29 @@ pub struct Webhook {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub headers: serde_json::Value,
+}
+
+impl<'r> FromRow<'r, PgRow> for Webhook {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        let event_types_json: serde_json::Value = row.try_get("event_types")?;
+        let event_types: Vec<WebhookEventType> = serde_json::from_value(event_types_json)
+            .map_err(|e| sqlx::Error::ColumnDecode {
+                index: "event_types".to_string(),
+                source: Box::new(e),
+            })?;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            url: row.try_get("url")?,
+            event_types,
+            secret: row.try_get("secret")?,
+            active: row.try_get("active")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            headers: row.try_get("headers")?,
+        })
+    }
 }
 
 impl Webhook {

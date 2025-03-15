@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::application::scraper::service::ScraperService;
 use crate::utils::error::AppError;
+use crate::api::routes::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct ListJobsQuery {
@@ -18,16 +19,16 @@ pub struct ListJobsQuery {
 }
 
 pub async fn list_jobs(
-    State(scraper_service): State<Arc<ScraperService>>,
+    State(state): State<AppState>,
     Query(params): Query<ListJobsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(10);
     let offset = params.offset.unwrap_or(0);
     
     let jobs = if let Some(config_id) = params.config_id {
-        scraper_service.list_jobs_by_config(config_id, limit, offset).await?
+        state.scraper_service.list_jobs_by_config(config_id, limit, offset).await?
     } else {
-        scraper_service.list_jobs(limit, offset).await?
+        state.scraper_service.list_jobs(limit, offset).await?
     };
     
     let response = serde_json::json!({
@@ -41,10 +42,10 @@ pub async fn list_jobs(
 }
 
 pub async fn get_job(
-    State(scraper_service): State<Arc<ScraperService>>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let job = scraper_service.get_job(id).await?;
+    let job = state.scraper_service.get_job(id).await?;
     
     let response = serde_json::json!({
         "job": job,
@@ -58,10 +59,10 @@ pub async fn get_job(
 }
 
 pub async fn cancel_job(
-    State(scraper_service): State<Arc<ScraperService>>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let job = scraper_service.cancel_job(id).await?;
+    let job = state.scraper_service.cancel_job(id).await?;
     
     let response = serde_json::json!({
         "job": job,

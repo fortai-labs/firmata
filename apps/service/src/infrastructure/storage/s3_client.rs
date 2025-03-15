@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::{Client, Region, config::Credentials};
+use aws_config::Region;
+use aws_sdk_s3::{Client,  config::Credentials};
 use std::io::Cursor;
 use uuid::Uuid;
 
@@ -32,12 +32,12 @@ impl S3StorageClient {
             "s3-credentials",
         );
 
-        // Set up region
-        let region_provider = RegionProviderChain::first_try(Region::new(config.region.clone()));
+        // Set up region directly
+        let region = Region::new(config.region.clone());
 
         // Build the S3 client configuration
         let s3_config = aws_sdk_s3::Config::builder()
-            .region(region_provider)
+            .region(region)
             .endpoint_url(&config.endpoint)
             .credentials_provider(credentials)
             .build();

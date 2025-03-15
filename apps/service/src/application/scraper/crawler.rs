@@ -228,7 +228,7 @@ impl Crawler {
                             sleep(backoff_duration).await;
                             continue;
                         } else {
-                            return Err(AppError::ExternalServiceError(
+                            return Err(AppError::Scraper(
                                 format!("Server error after {} retries: {}", max_retries, response.status())
                             ).into());
                         }
@@ -244,7 +244,7 @@ impl Crawler {
                               url, backoff_duration.as_millis(), retries, max_retries, e);
                         sleep(backoff_duration).await;
                     } else {
-                        return Err(AppError::ExternalServiceError(
+                        return Err(AppError::Scraper(
                             format!("Request failed after {} retries: {}", max_retries, e)
                         ).into());
                     }
@@ -304,17 +304,17 @@ impl Crawler {
             job_id: uuid::Uuid::nil(), // This will be set by the caller
             url: url.to_string(),
             normalized_url: self.normalize_url(url)?,
-            content_hash: Some(content_hash),
+            content_hash: content_hash,
             http_status: status.as_u16() as i32,
-            http_headers: Some(headers_json),
+            http_headers: headers_json,
             crawled_at: chrono::Utc::now(),
             html_storage_path: None, // This will be set by the caller
             markdown_storage_path: None, // This will be set by the caller
             title,
-            metadata: Some(serde_json::json!({
+            metadata: serde_json::json!({
                 "content_length": body.len(),
                 "content_type": headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or(""),
-            })),
+            }),
             error_message: if status.is_client_error() || status.is_server_error() {
                 Some(format!("HTTP error: {}", status))
             } else {

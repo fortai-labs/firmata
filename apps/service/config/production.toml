@@ -1,0 +1,36 @@
+[database]
+# In production, these would be set via environment variables
+# url = "postgres://user:password@db.example.com:5432/scraper_prod"
+max_connections = 20
+
+[redis]
+# url = "redis://redis.example.com:6379"
+pool_size = 20
+
+[storage]
+# These would be set via environment variables in production
+# endpoint = "https://s3.amazonaws.com"
+# region = "us-east-1"
+# bucket = "scraper-prod"
+# access_key = "..."
+# secret_key = "..."
+
+[grpc]
+# markdown_service_url = "http://markdown-service:50051"
+
+[server]
+address = "0.0.0.0:8080"
+
+[scraper]
+# More conservative settings for production
+default_user_agent = "LegalScraper/1.0 (https://example.com/bot; bot@example.com)"
+request_delay_ms = 2000
+max_concurrent_requests = 3
+max_retries = 5
+request_timeout_secs = 60
+respect_robots_txt = true
+max_page_size_bytes = 5242880  # 5MB
+
+[scheduler]
+enabled = true
+check_interval_seconds = 300  # 5 minutes 
