@@ -1,0 +1,29 @@
+[database]
+url = "postgres://postgres:postgres@localhost:5432/scraper_dev"
+
+[redis]
+url = "redis://localhost:6379"
+
+[storage]
+endpoint = "http://localhost:9000"
+region = "us-east-1"
+bucket = "scraper-dev"
+access_key = "minioadmin"
+secret_key = "minioadmin"
+
+[grpc]
+markdown_service_url = "http://localhost:50051"
+
+[server]
+address = "127.0.0.1:8080"
+
+[scraper]
+# More aggressive settings for development
+request_delay_ms = 500
+max_concurrent_requests = 2
+max_retries = 2
+respect_robots_txt = true
+
+[scheduler]
+enabled = true
+check_interval_seconds = 30 

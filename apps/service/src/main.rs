@@ -12,10 +12,12 @@ use tracing::{info, error};
 use crate::application::scheduler::service::SchedulerService;
 use crate::application::scraper::service::ScraperService;
 use crate::application::scraper::worker::ScraperWorker;
+use crate::application::scraper::crawler::CrawlerConfig;
 use crate::config::AppConfig;
 use crate::infrastructure::queue::redis_queue::RedisJobQueue;
 use crate::infrastructure::queue::redis_client::RedisClient;
 use crate::infrastructure::storage::s3_client::S3StorageClient;
+use crate::infrastructure::grpc::markdown_client::MarkdownClient;
 use crate::utils::logging;
 
 #[tokio::main]
@@ -59,6 +61,23 @@ async fn main() -> anyhow::Result<()> {
     ).await?);
     info!("Redis client initialized");
     
+    // Initialize Markdown client
+    let markdown_client = Arc::new(MarkdownClient::new(
+        &config.grpc.markdown_service_url,
+    ).await?);
+    info!("Markdown client initialized");
+    
+    // Create crawler configuration
+    let crawler_config = CrawlerConfig {
+        max_concurrent_requests: config.scraper.max_concurrent_requests,
+        delay_between_requests_ms: config.scraper.request_delay_ms,
+        max_retries: config.scraper.max_retries,
+        user_agent: config.scraper.default_user_agent.clone(),
+        request_timeout_secs: config.scraper.request_timeout_secs,
+        respect_robots_txt: config.scraper.respect_robots_txt,
+        max_page_size_bytes: config.scraper.max_page_size_bytes,
+    };
+    
     // Initialize scraper service
     let scraper_service = Arc::new(ScraperService::new(
         db_pool.clone(),
@@ -67,11 +86,19 @@ async fn main() -> anyhow::Result<()> {
     info!("Scraper service initialized");
     
     // Initialize scraper worker
-    let scraper_worker = Arc::new(ScraperWorker::new(
+    let scraper_worker = match ScraperWorker::new(
         db_pool.clone(),
         job_queue.clone(),
         storage_client.clone(),
-    ));
+        markdown_client.clone(),
+        crawler_config,
+    ).await {
+        Ok(worker) => Arc::new(worker),
+        Err(e) => {
+            error!("Failed to initialize scraper worker: {}", e);
+            return Err(e);
+        }
+    };
     info!("Scraper worker initialized");
     
     // Initialize scheduler service

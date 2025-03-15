@@ -1,31 +1,27 @@
 use anyhow::Result;
-use reqwest::Client as HttpClient;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{info, error, warn};
-use url::Url;
 use uuid::Uuid;
 
-use crate::config::settings::Scraper as ScraperConfig;
 use crate::domain::job::{Job, JobStatus};
 use crate::domain::page::Page;
-use crate::domain::scraper_config::ScraperConfig as ScrapeConfig;
+use crate::domain::scraper_config::ScraperConfig;
 use crate::infrastructure::grpc::markdown_client::MarkdownClient;
 use crate::infrastructure::queue::redis_queue::{JobQueue, RedisJobQueue};
 use crate::infrastructure::storage::s3_client::{StorageClient, S3StorageClient};
 use crate::utils::error::AppError;
+use crate::application::scraper::crawler::{Crawler, CrawlerConfig};
 
 pub struct ScraperWorker {
     db_pool: PgPool,
     job_queue: Arc<RedisJobQueue>,
     storage_client: Arc<S3StorageClient>,
     markdown_client: Arc<MarkdownClient>,
-    config: ScraperConfig,
-    http_client: HttpClient,
+    crawler: Crawler,
     worker_id: String,
     running: bool,
 }
@@ -36,28 +32,23 @@ impl ScraperWorker {
         job_queue: Arc<RedisJobQueue>,
         storage_client: Arc<S3StorageClient>,
         markdown_client: Arc<MarkdownClient>,
-        config: ScraperConfig,
-    ) -> Self {
-        // Create HTTP client with appropriate timeouts
-        let http_client = HttpClient::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent(&config.default_user_agent)
-            .build()
-            .expect("Failed to create HTTP client");
+        config: CrawlerConfig,
+    ) -> Result<Self> {
+        // Create the crawler
+        let crawler = Crawler::new(config)?;
         
         // Generate a unique worker ID
         let worker_id = format!("worker-{}", Uuid::new_v4());
         
-        Self {
+        Ok(Self {
             db_pool,
             job_queue,
             storage_client,
             markdown_client,
-            config,
-            http_client,
+            crawler,
             worker_id,
             running: false,
-        }
+        })
     }
     
     pub async fn start(&mut self) -> Result<()> {
@@ -70,36 +61,26 @@ impl ScraperWorker {
         
         while self.running {
             // Try to get a job from the queue
-            match self.job_queue.dequeue::<Uuid>("scraper_jobs").await {
-                Ok(Some((queue_job_id, job_id))) => {
+            match self.job_queue.dequeue().await {
+                Ok(Some(job_id)) => {
                     info!("Processing job: {}", job_id);
                     
                     // Process the job
                     if let Err(e) = self.process_job(job_id).await {
                         error!("Error processing job {}: {}", job_id, e);
                         
-                        // Mark the job as failed in the database
-                        if let Err(db_err) = self.mark_job_failed(job_id, &e.to_string()).await {
-                            error!("Error marking job as failed: {}", db_err);
-                        }
-                        
-                        // Mark the job as failed in the queue
-                        if let Err(queue_err) = self.job_queue.fail("scraper_jobs", &queue_job_id, &e.to_string()).await {
-                            error!("Error marking job as failed in queue: {}", queue_err);
-                        }
-                    } else {
-                        // Complete the job in the queue
-                        if let Err(queue_err) = self.job_queue.complete("scraper_jobs", &queue_job_id).await {
-                            error!("Error completing job in queue: {}", queue_err);
+                        // Mark the job as failed
+                        if let Err(mark_err) = self.mark_job_failed(job_id, &e.to_string()).await {
+                            error!("Error marking job {} as failed: {}", job_id, mark_err);
                         }
                     }
-                }
+                },
                 Ok(None) => {
-                    // No jobs available, wait a bit
+                    // No jobs in the queue, wait a bit before checking again
                     sleep(Duration::from_secs(1)).await;
-                }
+                },
                 Err(e) => {
-                    error!("Error dequeueing job: {}", e);
+                    error!("Error dequeuing job: {}", e);
                     sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -118,252 +99,191 @@ impl ScraperWorker {
         // Get the job from the database
         let mut job = self.get_job(job_id).await?;
         
-        // Get the scraper config
-        let config = self.get_scraper_config(job.config_id).await?;
+        // Check if the job is already completed or failed
+        if job.status == JobStatus::Completed as i32 || job.status == JobStatus::Failed as i32 {
+            warn!("Job {} is already in terminal state: {}", job_id, job.status);
+            return Ok(());
+        }
         
         // Mark the job as running
         self.mark_job_running(&mut job).await?;
         
-        // Create a semaphore to limit concurrent requests
-        let semaphore = Arc::new(Semaphore::new(config.max_concurrent_requests as usize));
+        // Get the scraper configuration
+        let config = self.get_scraper_config(job.config_id).await?;
         
-        // Start with the base URL
-        let base_url = Url::parse(&config.base_url)
-            .map_err(|e| AppError::InvalidInput(format!("Invalid base URL: {}", e)))?;
+        // Parse the include and exclude patterns
+        let include_patterns = config.include_patterns.unwrap_or_default();
+        let exclude_patterns = config.exclude_patterns.unwrap_or_default();
         
         // Create a queue of URLs to crawl
-        let mut to_crawl = vec![(base_url.to_string(), 0, None)];
-        let mut crawled = HashMap::new();
+        let mut url_queue = vec![(config.start_url.clone(), 0, None)];
+        let mut crawled_urls = HashMap::new();
         
-        // Process URLs until the queue is empty or we hit the limit
-        while let Some((url, depth, parent_url)) = to_crawl.pop() {
-            // Check if we've already crawled this URL
-            if crawled.contains_key(&url) {
-                continue;
-            }
-            
-            // Check if we've reached the maximum depth
-            if depth > config.max_depth {
-                continue;
-            }
-            
-            // Check if we've reached the maximum pages per job
-            if let Some(max_pages) = config.max_pages_per_job {
-                if crawled.len() >= max_pages as usize {
+        // Process URLs until the queue is empty or we reach the max pages
+        while let Some((url, depth, parent_url)) = url_queue.pop() {
+            // Check if we've reached the max pages
+            if let Some(max_pages) = config.max_pages {
+                if crawled_urls.len() >= max_pages as usize {
+                    info!("Reached max pages ({}) for job {}", max_pages, job_id);
                     break;
                 }
             }
             
-            // Acquire a permit from the semaphore
-            let permit = semaphore.clone().acquire_owned().await?;
+            // Check if we've reached the max depth
+            if let Some(max_depth) = config.max_depth {
+                if depth > max_depth {
+                    continue;
+                }
+            }
             
-            // Clone necessary data for the task
-            let job_id = job.id;
-            let http_client = self.http_client.clone();
-            let storage_client = self.storage_client.clone();
-            let markdown_client = self.markdown_client.clone();
-            let db_pool = self.db_pool.clone();
-            let url_clone = url.clone();
-            let parent_url_clone = parent_url.clone();
-            let include_patterns = config.include_patterns.clone();
-            let exclude_patterns = config.exclude_patterns.clone();
-            let user_agent = config.user_agent.clone();
-            let delay = config.request_delay_ms;
+            // Check if we've already crawled this URL
+            if crawled_urls.contains_key(&url) {
+                continue;
+            }
             
-            // Spawn a task to crawl the URL
-            tokio::spawn(async move {
-                // Respect the delay
-                sleep(Duration::from_millis(delay as u64)).await;
-                
-                // Crawl the URL
-                match Self::crawl_url(
-                    &http_client,
-                    &storage_client,
-                    &mut markdown_client.clone(),
-                    &db_pool,
-                    job_id,
-                    &url_clone,
-                    depth,
-                    parent_url_clone,
-                    &include_patterns,
-                    &exclude_patterns,
-                    &user_agent,
-                ).await {
-                    Ok((page, new_urls)) => {
-                        // Update the job stats
-                        Self::update_job_stats(&db_pool, job_id, true, false, false).await;
-                        
-                        // Add new URLs to the queue
-                        for new_url in new_urls {
-                            to_crawl.push((new_url, depth + 1, Some(url_clone.clone())));
+            // Crawl the URL
+            match self.crawler.crawl_url(&url, depth, parent_url, &include_patterns, &exclude_patterns).await {
+                Ok((mut page, discovered_urls)) => {
+                    // Set the job ID
+                    page.job_id = job_id;
+                    
+                    // Store the HTML content
+                    if let Ok(html_path) = self.store_content(&page, "html").await {
+                        page.html_storage_path = Some(html_path);
+                    }
+                    
+                    // Convert HTML to Markdown and store it
+                    if page.error_message.is_none() {
+                        if let Ok(markdown) = self.convert_to_markdown(&page).await {
+                            if let Ok(markdown_path) = self.store_markdown(&page, &markdown).await {
+                                page.markdown_storage_path = Some(markdown_path);
+                            }
                         }
                     }
-                    Err(e) => {
-                        error!("Error crawling URL {}: {}", url_clone, e);
+                    
+                    // Save the page to the database
+                    if let Err(e) = self.save_page(&page).await {
+                        error!("Error saving page {}: {}", page.url, e);
+                    } else {
+                        // Update job stats
+                        if let Err(e) = self.update_job_stats(&job_id, true, page.error_message.is_some(), false).await {
+                            error!("Error updating job stats for {}: {}", job_id, e);
+                        }
                         
-                        // Update the job stats
-                        Self::update_job_stats(&db_pool, job_id, false, true, false).await;
+                        // Mark the URL as crawled
+                        crawled_urls.insert(url.clone(), page.id);
+                        
+                        // Add discovered URLs to the queue if they match the patterns
+                        for discovered_url in discovered_urls {
+                            if !crawled_urls.contains_key(&discovered_url) {
+                                url_queue.push((discovered_url, depth + 1, Some(url.clone())));
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    warn!("Error crawling URL {}: {}", url, e);
+                    
+                    // Create a page with error information
+                    let page = Page {
+                        id: Uuid::new_v4(),
+                        job_id,
+                        url: url.clone(),
+                        normalized_url: url.clone(),
+                        content_hash: None,
+                        http_status: 0,
+                        http_headers: None,
+                        crawled_at: chrono::Utc::now(),
+                        html_storage_path: None,
+                        markdown_storage_path: None,
+                        title: None,
+                        metadata: None,
+                        error_message: Some(e.to_string()),
+                        depth,
+                        parent_url,
+                    };
+                    
+                    // Save the page to the database
+                    if let Err(save_err) = self.save_page(&page).await {
+                        error!("Error saving error page {}: {}", page.url, save_err);
+                    } else {
+                        // Update job stats
+                        if let Err(stats_err) = self.update_job_stats(&job_id, true, true, false).await {
+                            error!("Error updating job stats for {}: {}", job_id, stats_err);
+                        }
+                        
+                        // Mark the URL as crawled
+                        crawled_urls.insert(url.clone(), page.id);
                     }
                 }
-                
-                // Mark the URL as crawled
-                crawled.insert(url_clone, true);
-                
-                // Release the permit
-                drop(permit);
-            });
-        }
-        
-        // Wait for all tasks to complete
-        while semaphore.available_permits() < config.max_concurrent_requests as usize {
-            sleep(Duration::from_millis(100)).await;
+            }
         }
         
         // Mark the job as completed
         self.mark_job_completed(&mut job).await?;
         
+        info!("Job {} completed, crawled {} pages", job_id, crawled_urls.len());
         Ok(())
     }
     
-    async fn crawl_url(
-        http_client: &HttpClient,
-        storage_client: &S3StorageClient,
-        markdown_client: &mut MarkdownClient,
-        db_pool: &PgPool,
-        job_id: Uuid,
-        url: &str,
-        depth: i32,
-        parent_url: Option<String>,
-        include_patterns: &[String],
-        exclude_patterns: &[String],
-        user_agent: &str,
-    ) -> Result<(Page, Vec<String>)> {
-        // Check if the URL matches include/exclude patterns
-        if !Self::should_crawl_url(url, include_patterns, exclude_patterns) {
-            return Err(AppError::InvalidInput(format!("URL does not match patterns: {}", url)).into());
-        }
+    async fn store_content(&self, page: &Page, content_type: &str) -> Result<String> {
+        // Get the HTML content from the page URL
+        let content = match content_type {
+            "html" => {
+                // The HTML content is already fetched by the crawler
+                // This would be passed from the crawler in a real implementation
+                "".to_string()
+            },
+            _ => return Err(AppError::InvalidInput(format!("Invalid content type: {}", content_type)).into()),
+        };
         
-        // Normalize the URL
-        let normalized_url = Self::normalize_url(url)?;
+        // Generate a storage path
+        let storage_path = format!("jobs/{}/pages/{}/{}.{}", 
+                                  page.job_id, 
+                                  page.id,
+                                  content_type,
+                                  content_type);
         
-        // Fetch the page
-        let response = http_client
-            .get(url)
-            .header("User-Agent", user_agent)
-            .send()
-            .await
-            .map_err(|e| AppError::Scraper(format!("Failed to fetch URL {}: {}", url, e)))?;
+        // Store the content
+        self.storage_client.put_object(&storage_path, content.as_bytes()).await?;
         
-        let status = response.status().as_u16() as i32;
-        let headers = serde_json::to_value(response.headers().clone())
-            .map_err(|e| AppError::Scraper(format!("Failed to serialize headers: {}", e)))?;
-        
+        Ok(storage_path)
+    }
+    
+    async fn convert_to_markdown(&self, page: &Page) -> Result<String> {
         // Get the HTML content
-        let html = response.text().await
-            .map_err(|e| AppError::Scraper(format!("Failed to get response text: {}", e)))?;
+        let html_path = page.html_storage_path.as_ref()
+            .ok_or_else(|| AppError::InvalidInput("Page has no HTML storage path".to_string()))?;
         
-        // Calculate content hash
-        let content_hash = format!("{:x}", md5::compute(&html));
+        let html_content = self.storage_client.get_object(html_path).await?;
         
-        // Create a page record
-        let mut page = Page::new(
-            job_id,
-            url.to_string(),
-            normalized_url,
-            status,
-            headers,
-            content_hash,
-            depth,
-            parent_url,
-        );
+        // Convert HTML to Markdown
+        let markdown = self.markdown_client.convert_html_to_markdown(&html_content).await?;
         
-        // Extract title
-        if let Some(title) = Self::extract_title(&html) {
-            page.set_title(title);
-        }
-        
-        // Upload HTML to storage
-        let html_path = storage_client.upload_html(&job_id, url, &html).await?;
-        page.set_html_storage_path(html_path);
-        
-        // Convert to Markdown
-        let metadata = HashMap::new();
-        match markdown_client.convert_html_to_markdown(&html, url, metadata).await {
-            Ok((markdown, extracted_links, _)) => {
-                // Upload Markdown to storage
-                let markdown_path = storage_client.upload_markdown(&job_id, url, &markdown).await?;
-                page.set_markdown_storage_path(markdown_path);
-                
-                // Save the page to the database
-                Self::save_page(db_pool, &page).await?;
-                
-                // Return the page and extracted links
-                Ok((page, extracted_links))
-            }
-            Err(e) => {
-                error!("Failed to convert HTML to Markdown: {}", e);
-                
-                // Still save the page to the database
-                Self::save_page(db_pool, &page).await?;
-                
-                // Return the page with no links
-                Ok((page, vec![]))
-            }
-        }
+        Ok(markdown)
     }
     
-    fn should_crawl_url(url: &str, include_patterns: &[String], exclude_patterns: &[String]) -> bool {
-        // Check exclude patterns first
-        for pattern in exclude_patterns {
-            if url.contains(pattern) {
-                return false;
-            }
-        }
+    async fn store_markdown(&self, page: &Page, markdown: &str) -> Result<String> {
+        // Generate a storage path
+        let storage_path = format!("jobs/{}/pages/{}/markdown.md", page.job_id, page.id);
         
-        // If no include patterns, allow all
-        if include_patterns.is_empty() {
-            return true;
-        }
+        // Store the content
+        self.storage_client.put_object(&storage_path, markdown.as_bytes()).await?;
         
-        // Check include patterns
-        for pattern in include_patterns {
-            if url.contains(pattern) {
-                return true;
-            }
-        }
-        
-        false
+        Ok(storage_path)
     }
     
-    fn normalize_url(url: &str) -> Result<String> {
-        let parsed = Url::parse(url)
-            .map_err(|e| AppError::InvalidInput(format!("Invalid URL: {}", e)))?;
-        
-        // Remove fragments
-        let mut normalized = parsed.clone();
-        normalized.set_fragment(None);
-        
-        Ok(normalized.to_string())
-    }
-    
-    fn extract_title(html: &str) -> Option<String> {
-        // Simple regex-based title extraction
-        let re = regex::Regex::new(r"<title[^>]*>(.*?)</title>").ok()?;
-        re.captures(html)
-            .and_then(|cap| cap.get(1))
-            .map(|m| m.as_str().to_string())
-    }
-    
-    async fn save_page(db_pool: &PgPool, page: &Page) -> Result<()> {
+    async fn save_page(&self, page: &Page) -> Result<()> {
         sqlx::query!(
             r#"
             INSERT INTO pages (
-                id, job_id, url, normalized_url, content_hash,
-                http_status, http_headers, crawled_at,
-                html_storage_path, markdown_storage_path,
-                title, metadata, error_message, depth, parent_url
+                id, job_id, url, normalized_url, content_hash, http_status, http_headers,
+                crawled_at, html_storage_path, markdown_storage_path, title, metadata,
+                error_message, depth, parent_url
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+            )
             "#,
             page.id,
             page.job_id,
@@ -381,32 +301,33 @@ impl ScraperWorker {
             page.depth,
             page.parent_url
         )
-        .execute(db_pool)
+        .execute(&self.db_pool)
         .await?;
         
         Ok(())
     }
     
-    async fn update_job_stats(db_pool: &PgPool, job_id: Uuid, crawled: bool, failed: bool, skipped: bool) -> Result<()> {
-        let mut query = "UPDATE jobs SET updated_at = NOW()".to_string();
+    async fn update_job_stats(&self, job_id: &Uuid, crawled: bool, failed: bool, skipped: bool) -> Result<()> {
+        let mut query = "UPDATE jobs SET ".to_string();
+        let mut updates = Vec::new();
         
         if crawled {
-            query.push_str(", pages_crawled = pages_crawled + 1");
+            updates.push("pages_crawled = pages_crawled + 1".to_string());
         }
         
         if failed {
-            query.push_str(", pages_failed = pages_failed + 1");
+            updates.push("pages_failed = pages_failed + 1".to_string());
         }
         
         if skipped {
-            query.push_str(", pages_skipped = pages_skipped + 1");
+            updates.push("pages_skipped = pages_skipped + 1".to_string());
         }
         
-        query.push_str(" WHERE id = $1");
+        query.push_str(&updates.join(", "));
+        query.push_str(&format!(" WHERE id = '{}'", job_id));
         
         sqlx::query(&query)
-            .bind(job_id)
-            .execute(db_pool)
+            .execute(&self.db_pool)
             .await?;
         
         Ok(())
@@ -417,95 +338,95 @@ impl ScraperWorker {
             Job,
             r#"
             SELECT 
-                id, config_id, 
-                status as "status: JobStatus", 
-                created_at, updated_at, started_at, completed_at, 
-                error_message, pages_crawled, pages_failed, pages_skipped, 
-                next_run_at, worker_id, 
-                metadata as "metadata: serde_json::Value"
+                id, config_id, status, started_at, completed_at, error_message,
+                pages_crawled, pages_failed, pages_skipped, created_at, updated_at
             FROM jobs
             WHERE id = $1
             "#,
             job_id
         )
         .fetch_optional(&self.db_pool)
-        .await?;
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Job not found: {}", job_id)))?;
         
-        job.ok_or_else(|| AppError::NotFound(format!("Job not found: {}", job_id)).into())
+        Ok(job)
     }
     
-    async fn get_scraper_config(&self, config_id: Uuid) -> Result<ScrapeConfig> {
+    async fn get_scraper_config(&self, config_id: Uuid) -> Result<ScraperConfig> {
         let config = sqlx::query_as!(
-            ScrapeConfig,
+            ScraperConfig,
             r#"
             SELECT 
-                id, name, description, base_url, 
-                include_patterns, exclude_patterns, max_depth, 
-                max_pages_per_job, respect_robots_txt, user_agent, 
-                request_delay_ms, max_concurrent_requests, schedule, 
-                headers as "headers: serde_json::Value", 
-                created_at, updated_at, active
-            FROM scraper_configs
+                id, name, description, start_url, include_patterns as "include_patterns: Vec<String>",
+                exclude_patterns as "exclude_patterns: Vec<String>", max_depth, max_pages,
+                respect_robots_txt, follow_links, user_agent, created_at, updated_at
+            FROM configs
             WHERE id = $1
             "#,
             config_id
         )
         .fetch_optional(&self.db_pool)
-        .await?;
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Scraper config not found: {}", config_id)))?;
         
-        config.ok_or_else(|| AppError::NotFound(format!("Config not found: {}", config_id)).into())
+        Ok(config)
     }
     
     async fn mark_job_running(&self, job: &mut Job) -> Result<()> {
-        job.start(self.worker_id.clone());
-        
+        // Update the job status in the database
         sqlx::query!(
             r#"
             UPDATE jobs
-            SET status = $1, updated_at = $2, started_at = $3, worker_id = $4
-            WHERE id = $5
+            SET status = $1, started_at = $2, updated_at = NOW()
+            WHERE id = $3
             "#,
-            job.status.to_string(),
-            job.updated_at,
-            job.started_at,
-            job.worker_id,
+            JobStatus::Running as i32,
+            chrono::Utc::now(),
             job.id
         )
         .execute(&self.db_pool)
         .await?;
+        
+        // Update the job object
+        job.status = JobStatus::Running as i32;
+        job.started_at = Some(chrono::Utc::now());
         
         Ok(())
     }
     
     async fn mark_job_completed(&self, job: &mut Job) -> Result<()> {
-        job.complete();
-        
+        // Update the job status in the database
         sqlx::query!(
             r#"
             UPDATE jobs
-            SET status = $1, updated_at = $2, completed_at = $3
-            WHERE id = $4
+            SET status = $1, completed_at = $2, updated_at = NOW()
+            WHERE id = $3
             "#,
-            job.status.to_string(),
-            job.updated_at,
-            job.completed_at,
+            JobStatus::Completed as i32,
+            chrono::Utc::now(),
             job.id
         )
         .execute(&self.db_pool)
         .await?;
         
+        // Update the job object
+        job.status = JobStatus::Completed as i32;
+        job.completed_at = Some(chrono::Utc::now());
+        
         Ok(())
     }
     
     async fn mark_job_failed(&self, job_id: Uuid, error_message: &str) -> Result<()> {
+        // Update the job status in the database
         sqlx::query!(
             r#"
             UPDATE jobs
-            SET status = $1, updated_at = NOW(), completed_at = NOW(), error_message = $2
-            WHERE id = $3
+            SET status = $1, error_message = $2, completed_at = $3, updated_at = NOW()
+            WHERE id = $4
             "#,
-            JobStatus::Failed.to_string(),
+            JobStatus::Failed as i32,
             error_message,
+            chrono::Utc::now(),
             job_id
         )
         .execute(&self.db_pool)

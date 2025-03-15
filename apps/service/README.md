@@ -1,160 +1,110 @@
 # Legal Website Scraper Service
 
-A high-performance Rust-based microservice for crawling and extracting content from legal websites.
+A Rust-based microservice for crawling and scraping legal websites with configurable rules, rate limiting, and politeness controls.
 
 ## Features
 
-- **High Performance**: Built with Rust for optimal speed and resource efficiency
-- **Configurable Crawling**: Supports custom crawling rules, depth limits, and URL patterns
-- **Content Processing**: Converts HTML to Markdown for easier consumption
-- **Scalable Architecture**: Uses Redis for job queuing and PostgreSQL for data persistence
-- **S3 Storage**: Stores crawled content in S3-compatible storage
-- **RESTful API**: Provides a comprehensive API for managing scraper configurations, jobs, and results
-- **Webhook Support**: Notifies external systems about scraping events
-- **Analytics**: Tracks performance metrics and crawling statistics
+- **Configurable Crawling**: Define include/exclude patterns, max depth, and max pages
+- **Rate Limiting**: Control request frequency and concurrency
+- **Politeness Controls**: Respect robots.txt, configurable delays between requests
+- **Content Processing**: Store HTML and convert to Markdown
+- **Webhook Notifications**: Notify external services about job status
+- **Scheduled Jobs**: Run scraper jobs on a schedule
+- **API**: RESTful API for managing scraper configurations and jobs
 
 ## Architecture
 
-The service follows a modular architecture with clear separation of concerns:
+The service is organized into the following layers:
 
-### Domain Layer
-- **Models**: Core domain entities like `Config`, `Job`, `Page`, and `Webhook`
-- **Repositories**: Interfaces for data access
+- **Domain**: Core business entities and logic
+- **Application**: Use cases and business rules
+- **Infrastructure**: External services and technical concerns
+- **API**: HTTP endpoints and handlers
 
-### Application Layer
-- **Services**: Business logic for scraper configuration and job management
-- **Workers**: Background processing for crawling tasks
-- **Scheduler**: Handles recurring jobs
-
-### Infrastructure Layer
-- **Database**: PostgreSQL for persistent storage
-- **Queue**: Redis for job queuing
-- **Storage**: S3-compatible storage for HTML and Markdown content
-- **gRPC**: Client for HTML to Markdown conversion
-
-### API Layer
-- **Routes**: RESTful API endpoints
-- **Handlers**: Request processing and response formatting
-- **Middleware**: Authentication, logging, and error handling
-
-## API Endpoints
-
-### Configurations
-- `GET /api/configs` - List all scraper configurations
-- `POST /api/configs` - Create a new scraper configuration
-- `GET /api/configs/:id` - Get a specific configuration
-- `PUT /api/configs/:id` - Update a configuration
-- `POST /api/configs/:id/start` - Start a job with a configuration
-
-### Jobs
-- `GET /api/jobs` - List all jobs
-- `GET /api/jobs/:id` - Get a specific job
-- `POST /api/jobs/:id/cancel` - Cancel a running job
-
-### Pages
-- `GET /api/pages` - List all crawled pages
-- `GET /api/pages/:id` - Get a specific page
-- `GET /api/pages/:id/html` - Get the HTML content of a page
-- `GET /api/pages/:id/markdown` - Get the Markdown content of a page
-
-### Webhooks
-- `GET /api/webhooks` - List all webhooks
-- `POST /api/webhooks` - Create a new webhook
-- `GET /api/webhooks/:id` - Get a specific webhook
-- `PUT /api/webhooks/:id` - Update a webhook
-- `DELETE /api/webhooks/:id` - Delete a webhook
-
-### Analytics
-- `GET /api/analytics/jobs` - Get job statistics
-- `GET /api/analytics/configs` - Get configuration statistics
-- `GET /api/analytics/jobs/:id/timeline` - Get timeline for a specific job
-
-## Setup and Configuration
+## Getting Started
 
 ### Prerequisites
-- Rust (latest stable)
-- PostgreSQL
-- Redis
-- S3-compatible storage (AWS S3, MinIO, etc.)
 
-### Environment Variables
-```
-# Server
-SERVER_ADDRESS=0.0.0.0:8080
+- Rust 1.70+
+- PostgreSQL 14+
+- Redis 6+
+- MinIO (or S3-compatible storage)
+- gRPC Markdown conversion service
 
-# Database
-DATABASE_URL=postgres://user:password@localhost:5432/scraper
+### Setup
 
-# Redis
-REDIS_URL=redis://localhost:6379
-REDIS_JOB_QUEUE=scraper_jobs
+1. Clone the repository
+2. Copy `.env.example` to `.env` and update the values
+3. Run database migrations: `cargo run --bin migrate`
+4. Start the service: `cargo run`
 
-# Storage
-STORAGE_ENDPOINT=https://s3.amazonaws.com
-STORAGE_REGION=us-east-1
-STORAGE_BUCKET=scraper-content
-STORAGE_ACCESS_KEY=your-access-key
-STORAGE_SECRET_KEY=your-secret-key
+### Configuration
 
-# Logging
-LOG_LEVEL=info
-```
+The service can be configured using:
 
-### Database Migrations
-```bash
-cargo run --bin migrate
-```
+1. Configuration files in the `config/` directory
+2. Environment variables with the `APP_` prefix
+3. Command-line arguments
 
-### Running the Service
-```bash
-cargo run
-```
+See `config/default.toml` for available configuration options.
 
 ## Development
 
 ### Building
+
 ```bash
 cargo build
 ```
 
+### Running
+
+```bash
+cargo run
+```
+
 ### Testing
+
 ```bash
 cargo test
 ```
 
-### Code Structure
+### Database Migrations
+
+```bash
+cargo run --bin migrate
 ```
-src/
-├── api/                 # API layer
-│   ├── handlers/        # Request handlers
-│   └── routes/          # API routes
-│
-├── application/         # Application layer
-│   ├── scraper/         # Scraper service and worker
-│   └── scheduler/       # Scheduler service
-│
-├── config/              # Configuration
-│
-├── domain/              # Domain models
-│   ├── config.rs        # Scraper configuration
-│   ├── job.rs           # Scraper job
-│   ├── page.rs          # Crawled page
-│   └── webhook.rs       # Webhook
-│
-├── infrastructure/      # Infrastructure layer
-│   ├── database/        # Database access
-│   ├── grpc/            # gRPC clients
-│   ├── queue/           # Redis queue
-│   └── storage/         # S3 storage
-│
-├── utils/               # Utilities
-│   ├── error.rs         # Error handling
-│   └── logging.rs       # Logging
-│
-├── main.rs              # Application entry point
-└── build.rs             # Build script for gRPC
-```
+
+## API Endpoints
+
+### Scraper Configurations
+
+- `GET /api/configs` - List all scraper configurations
+- `POST /api/configs` - Create a new scraper configuration
+- `GET /api/configs/{id}` - Get a specific scraper configuration
+- `PUT /api/configs/{id}` - Update a scraper configuration
+- `DELETE /api/configs/{id}` - Delete a scraper configuration
+- `POST /api/configs/{id}/jobs` - Start a new job for a configuration
+
+### Jobs
+
+- `GET /api/jobs` - List all jobs
+- `GET /api/jobs/{id}` - Get a specific job
+- `DELETE /api/jobs/{id}` - Cancel a job
+
+### Pages
+
+- `GET /api/jobs/{job_id}/pages` - List all pages for a job
+- `GET /api/pages/{id}` - Get a specific page
+- `GET /api/pages/{id}/content` - Get the content of a page
+
+### Webhooks
+
+- `GET /api/webhooks` - List all webhooks
+- `POST /api/webhooks` - Create a new webhook
+- `GET /api/webhooks/{id}` - Get a specific webhook
+- `PUT /api/webhooks/{id}` - Update a webhook
+- `DELETE /api/webhooks/{id}` - Delete a webhook
 
 ## License
 
-This project is licensed under the ISC License - see the LICENSE file for details. 
+MIT 

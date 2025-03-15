@@ -1,0 +1,35 @@
+[database]
+url = "postgres://postgres:postgres@localhost:5432/scraper"
+max_connections = 10
+
+[redis]
+url = "redis://localhost:6379"
+pool_size = 10
+job_queue_name = "scraper_jobs"
+
+[storage]
+endpoint = "http://localhost:9000"
+region = "us-east-1"
+bucket = "scraper"
+access_key = "minioadmin"
+secret_key = "minioadmin"
+
+[grpc]
+markdown_service_url = "http://localhost:50051"
+
+[server]
+address = "0.0.0.0:8080"
+port = 8080
+
+[scraper]
+default_user_agent = "LegalScraper/1.0"
+request_delay_ms = 1000
+max_concurrent_requests = 5
+max_retries = 3
+request_timeout_secs = 30
+respect_robots_txt = true
+max_page_size_bytes = 10485760  # 10MB
+
+[scheduler]
+enabled = true
+check_interval_seconds = 60 

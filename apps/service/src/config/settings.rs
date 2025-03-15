@@ -12,6 +12,7 @@ pub struct Database {
 pub struct Redis {
     pub url: String,
     pub pool_size: u32,
+    pub job_queue_name: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -24,22 +25,25 @@ pub struct Storage {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct MarkdownService {
-    pub url: String,
+pub struct Grpc {
+    pub markdown_service_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Api {
-    pub host: String,
+pub struct Server {
+    pub address: String,
     pub port: u16,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Scraper {
     pub default_user_agent: String,
-    pub default_delay_ms: u32,
+    pub request_delay_ms: u64,
     pub max_concurrent_requests: u32,
     pub max_retries: u32,
+    pub request_timeout_secs: u64,
+    pub respect_robots_txt: bool,
+    pub max_page_size_bytes: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -49,18 +53,18 @@ pub struct Scheduler {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Settings {
+pub struct AppConfig {
     pub database: Database,
     pub redis: Redis,
     pub storage: Storage,
-    pub markdown_service: MarkdownService,
-    pub api: Api,
+    pub grpc: Grpc,
+    pub server: Server,
     pub scraper: Scraper,
     pub scheduler: Scheduler,
 }
 
-impl Settings {
-    pub fn new() -> Result<Self, ConfigError> {
+impl AppConfig {
+    pub fn load() -> Result<Self, ConfigError> {
         // Load .env file if it exists
         dotenv::dotenv().ok();
 
