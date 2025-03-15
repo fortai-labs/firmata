@@ -1,0 +1,223 @@
+name: Rust Service CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'apps/service/**'
+      - '.github/workflows/rust-service-ci.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'apps/service/**'
+      - '.github/workflows/rust-service-ci.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./apps/service
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/service/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    defaults:
+      run:
+        working-directory: ./apps/service
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: scraper_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      minio:
+        image: minio/minio
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        volumes:
+          - /tmp/minio-data:/data
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/service/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      
+      - name: Create test bucket
+        run: |
+          pip install awscli
+          aws --endpoint-url http://localhost:9000 s3 mb s3://scraper-test --region us-east-1
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+      
+      - name: Run tests
+        run: cargo test --verbose
+        env:
+          APP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/scraper_test
+          APP_REDIS_URL: redis://localhost:6379
+          APP_STORAGE_ENDPOINT: http://localhost:9000
+          APP_STORAGE_REGION: us-east-1
+          APP_STORAGE_BUCKET: scraper-test
+          APP_STORAGE_ACCESS_KEY: minioadmin
+          APP_STORAGE_SECRET_KEY: minioadmin
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: ./apps/service
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/service/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      
+      - name: Build
+        run: cargo build --release
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: scraper-service
+          path: |
+            apps/service/target/release/scraper-service
+            apps/service/target/release/migrate
+            apps/service/config/
+            apps/service/.env.example
+            apps/service/README.md
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: scraper-service
+          path: ./dist
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./dist
+          push: true
+          tags: fortailabs/scraper-service:latest,fortailabs/scraper-service:${{ github.sha }}
+          file: ./apps/service/Dockerfile
+      
+      # This step would be customized based on your deployment environment
+      # For example, you might use kubectl to deploy to Kubernetes
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production..."
+          # Add your deployment commands here
+          # For example:
+          # kubectl set image deployment/scraper-service scraper-service=fortailabs/scraper-service:${{ github.sha }}
+        # Uncomment and configure as needed
+        # env:
+        #   KUBECONFIG: ${{ secrets.KUBECONFIG }} 

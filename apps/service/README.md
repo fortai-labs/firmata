@@ -74,6 +74,46 @@ cargo test
 cargo run --bin migrate
 ```
 
+### Local Development Environment
+
+We provide a Docker Compose setup for local development:
+
+```bash
+# Start the development environment
+docker-compose up -d
+
+# Initialize the development environment (create bucket, run migrations)
+./scripts/init-dev.sh
+```
+
+This will start:
+- PostgreSQL database
+- Redis server
+- MinIO (S3-compatible storage)
+
+## CI/CD Pipeline
+
+This project uses GitHub Actions for continuous integration and deployment:
+
+1. **Lint**: Runs `rustfmt` and `clippy` to ensure code quality
+2. **Test**: Runs the test suite with all dependencies (PostgreSQL, Redis, MinIO)
+3. **Build**: Builds the release binaries
+4. **Deploy**: Builds and pushes a Docker image, then deploys to the production environment
+
+The pipeline is triggered on:
+- Push to the `main` branch
+- Pull requests to the `main` branch
+
+### Deployment
+
+The service is deployed as a Docker container. The deployment process:
+
+1. Builds a Docker image with the release binaries
+2. Pushes the image to DockerHub with tags:
+   - `latest`
+   - Git commit SHA
+3. Deploys the image to the production environment
+
 ## API Endpoints
 
 ### Scraper Configurations
