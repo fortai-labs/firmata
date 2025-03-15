@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Database migrations for PostgreSQL
   - Webhook support for event notifications
   - Analytics endpoints for monitoring scraper performance
+  - Crawler module with rate limiting and politeness controls
+    - Domain-specific rate limiting
+    - Respect for robots.txt directives
+    - Configurable concurrent request limits
+    - Automatic retry logic for transient errors
+    - URL filtering based on include/exclude patterns
+    - HTML content processing with link extraction
+    - Content size limits for safety
 
 - Knowledge base enhancements
   - ADR 005: Rust-based Legal Website Scraper Microservice
@@ -29,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated project README with information about the Rust-based legal website scraper service
 - Enhanced Turbo configuration to support Rust-based services
+- Improved configuration system with environment variables and config files
+- Refactored worker implementation to use the dedicated crawler module
 
 ### Removed
 
