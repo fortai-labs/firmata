@@ -1,0 +1,39 @@
+{
+  "name": "duedue.io",
+  "private": true,
+  "scripts": {
+    "lint-staged": "lint-staged",
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "format": "biome format .",
+    "check": "biome check --apply .",
+    "format-and-lint": "biome check .",
+    "format-and-lint:fix": "biome check . --write",
+    "ui": "pnpm --filter repo-ui ui",
+    "web": "pnpm --filter web",
+    "prepare": "husky",
+    "bump-deps": "npx npm-check-updates --deep -u -x react-day-picker && pnpm install",
+    "bump-ui": "npx shadcn@latest add --all --overwrite -c packages/repo-ui",
+    "test": "turbo run test",
+    "view-report": "turbo run view-report"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@commitlint/cli": "^19.8.0",
+    "@commitlint/config-conventional": "^19.8.0",
+    "@types/node": "^22.13.9",
+    "husky": "^9.1.7",
+    "prettier": "^3.5.3",
+    "turbo": "^2.4.4",
+    "typescript": "5.8.2"
+  },
+  "packageManager": "pnpm@10.6.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

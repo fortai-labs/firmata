@@ -1,0 +1,26 @@
+{
+	"$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+	"extends": ["./tooling/biome-config/library.json"],
+	"files": {
+		"ignore": [
+			"**/node_modules/**",
+			"**/.next/**",
+			"**/dist/**",
+			"**/.turbo/**",
+			"./packages/ui/components.json",
+			"./commitlint.config.js",
+			"./.lintstagedrc.js",
+			"./apps/docs/.source/source.config.mjs",
+			"**/storybook-static/**",
+			"./apps/storybook/tsconfig.app.json",
+			"./apps/storybook/tsconfig.base.json",
+			"./apps/storybook/tsconfig.stories.json",
+			"./apps/storybook/tsconfig.tsbuildinfo",
+			"./apps/storybook/vite.config.ts",
+			"./apps/storybook/tsconfig.*",
+			"./apps/storybook/src/stories/**",
+			"**/storybook/**",
+			"**/vitest-config/**"
+		]
+	}
+}
