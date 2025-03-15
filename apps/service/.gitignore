@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Generated files
+/config/local.toml
+
+# Logs
+*.log 

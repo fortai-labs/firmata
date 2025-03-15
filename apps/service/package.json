@@ -1,0 +1,12 @@
+{
+  "name": "@fortai/scraper-service",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "cargo watch -x run",
+    "build": "cargo build --release",
+    "test": "cargo test",
+    "lint": "cargo clippy",
+    "migrate": "cargo run --bin migrate"
+  }
+} 

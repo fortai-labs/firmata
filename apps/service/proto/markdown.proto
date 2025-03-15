@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package markdown;
+
+service MarkdownConverter {
+  rpc ConvertHtmlToMarkdown (ConversionRequest) returns (ConversionResponse);
+}
+
+message ConversionRequest {
+  string html_content = 1;
+  string url = 2;
+  map<string, string> metadata = 3;
+}
+
+message ConversionResponse {
+  string markdown_content = 1;
+  repeated string extracted_links = 2;
+  map<string, string> metadata = 3;
+} 

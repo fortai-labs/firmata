@@ -1,0 +1,3 @@
+[submodule ".cursor/kb"]
+	path = .cursor/kb
+	url = git@github.com:fortai-labs/cursor-tools.git

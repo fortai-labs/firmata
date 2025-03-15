@@ -1,6 +1,6 @@
 # Turborepo starter
 
-This Turborepo starter is maintained by the Turborepo core team.
+This Turborepo includes a Rust-based legal website scraper service alongside Next.js applications.
 
 ## Using this example
 
@@ -18,11 +18,25 @@ This Turborepo includes the following packages/apps:
 
 - `docs`: a [Next.js](https://nextjs.org/) app
 - `web`: another [Next.js](https://nextjs.org/) app
+- `service`: a [Rust](https://www.rust-lang.org/)-based legal website scraper microservice
 - `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
 - `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
 - `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+Each package/app is 100% [TypeScript](https://www.typescriptlang.org/), except for the Rust-based service.
+
+### Legal Website Scraper Service
+
+The Rust-based legal website scraper service is designed to efficiently crawl and extract content from legal websites. Key features include:
+
+- **High Performance**: Built with Rust for optimal speed and resource efficiency
+- **Configurable Crawling**: Supports custom crawling rules, depth limits, and URL patterns
+- **Content Processing**: Converts HTML to Markdown for easier consumption
+- **Scalable Architecture**: Uses Redis for job queuing and PostgreSQL for data persistence
+- **S3 Storage**: Stores crawled content in S3-compatible storage
+- **RESTful API**: Provides a comprehensive API for managing scraper configurations, jobs, and results
+- **Webhook Support**: Notifies external systems about scraping events
+- **Analytics**: Tracks performance metrics and crawling statistics
 
 ### Utilities
 
@@ -31,6 +45,7 @@ This Turborepo has some additional tools already setup for you:
 - [TypeScript](https://www.typescriptlang.org/) for static type checking
 - [ESLint](https://eslint.org/) for code linting
 - [Prettier](https://prettier.io) for code formatting
+- [Rust](https://www.rust-lang.org/) for high-performance services
 
 ### Build
 
@@ -41,6 +56,13 @@ cd my-turborepo
 pnpm build
 ```
 
+To build the Rust service:
+
+```
+cd my-turborepo/apps/service
+cargo build
+```
+
 ### Develop
 
 To develop all apps and packages, run the following command:
@@ -48,6 +70,22 @@ To develop all apps and packages, run the following command:
 ```
 cd my-turborepo
 pnpm dev
+```
+
+For the Rust service:
+
+```
+cd my-turborepo/apps/service
+cargo run
+```
+
+### Database Migrations
+
+To run database migrations for the Rust service:
+
+```
+cd my-turborepo/apps/service
+cargo run --bin migrate
 ```
 
 ### Remote Caching

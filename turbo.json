@@ -14,7 +14,13 @@
       ],
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": [".next/**", "!.next/cache/**", "storybook-static/**", "dist/**"]
+      "outputs": [
+        ".next/**", 
+        "!.next/cache/**", 
+        "storybook-static/**", 
+        "dist/**",
+        "apps/service/target/release/**"
+      ]
     },
     "lint": {
       "dependsOn": ["^lint"]
@@ -36,6 +42,9 @@
     },
     "transit": {
       "dependsOn": ["^transit"]
+    },
+    "migrate": {
+      "cache": false
     }
   }
 }

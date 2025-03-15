@@ -1,0 +1,331 @@
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::sync::Arc;
+use uuid::Uuid;
+
+use crate::application::scraper::service::ScraperService;
+use crate::domain::scraper_config::ScraperConfig;
+use crate::utils::error::AppError;
+
+#[derive(Debug, Deserialize)]
+pub struct CreateConfigRequest {
+    name: String,
+    description: Option<String>,
+    base_url: String,
+    include_patterns: Vec<String>,
+    exclude_patterns: Vec<String>,
+    max_depth: i32,
+    max_pages_per_job: Option<i32>,
+    respect_robots_txt: Option<bool>,
+    user_agent: Option<String>,
+    request_delay_ms: Option<i32>,
+    max_concurrent_requests: Option<i32>,
+    schedule: Option<String>,
+    headers: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigResponse {
+    config: ScraperConfig,
+    _links: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListConfigsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+pub async fn create_config(
+    State(db_pool): State<PgPool>,
+    Json(payload): Json<CreateConfigRequest>,
+) -> Result<(StatusCode, Json<ConfigResponse>), AppError> {
+    // Create a new config from the request
+    let mut config = ScraperConfig::new(
+        payload.name,
+        payload.base_url,
+        payload.include_patterns,
+        payload.exclude_patterns,
+        payload.max_depth,
+    );
+    
+    // Apply optional fields
+    if let Some(description) = payload.description {
+        config.description = Some(description);
+    }
+    
+    if let Some(max_pages) = payload.max_pages_per_job {
+        config.max_pages_per_job = Some(max_pages);
+    }
+    
+    if let Some(respect_robots) = payload.respect_robots_txt {
+        config.respect_robots_txt = respect_robots;
+    }
+    
+    if let Some(user_agent) = payload.user_agent {
+        config.user_agent = user_agent;
+    }
+    
+    if let Some(delay) = payload.request_delay_ms {
+        config.request_delay_ms = delay;
+    }
+    
+    if let Some(max_concurrent) = payload.max_concurrent_requests {
+        config.max_concurrent_requests = max_concurrent;
+    }
+    
+    if let Some(schedule) = payload.schedule {
+        config.schedule = Some(schedule);
+    }
+    
+    if let Some(headers) = payload.headers {
+        config.headers = headers;
+    }
+    
+    // Save to database
+    sqlx::query!(
+        r#"
+        INSERT INTO scraper_configs (
+            id, name, description, base_url, include_patterns, exclude_patterns,
+            max_depth, max_pages_per_job, respect_robots_txt, user_agent,
+            request_delay_ms, max_concurrent_requests, schedule, headers,
+            created_at, updated_at, active
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        "#,
+        config.id,
+        config.name,
+        config.description,
+        config.base_url,
+        &config.include_patterns as _,
+        &config.exclude_patterns as _,
+        config.max_depth,
+        config.max_pages_per_job,
+        config.respect_robots_txt,
+        config.user_agent,
+        config.request_delay_ms,
+        config.max_concurrent_requests,
+        config.schedule,
+        config.headers,
+        config.created_at,
+        config.updated_at,
+        config.active
+    )
+    .execute(&db_pool)
+    .await
+    .map_err(AppError::from)?;
+    
+    // Create HATEOAS links
+    let links = serde_json::json!({
+        "self": { "href": format!("/api/configs/{}", config.id) },
+        "jobs": { "href": format!("/api/configs/{}/jobs", config.id) },
+        "start": { "href": format!("/api/configs/{}/start", config.id) }
+    });
+    
+    Ok((
+        StatusCode::CREATED,
+        Json(ConfigResponse {
+            config,
+            _links: links,
+        }),
+    ))
+}
+
+pub async fn get_config(
+    State(db_pool): State<PgPool>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ConfigResponse>, AppError> {
+    let config = sqlx::query_as!(
+        ScraperConfig,
+        r#"
+        SELECT 
+            id, name, description, base_url, 
+            include_patterns, exclude_patterns, max_depth, 
+            max_pages_per_job, respect_robots_txt, user_agent, 
+            request_delay_ms, max_concurrent_requests, schedule, 
+            headers as "headers: serde_json::Value", 
+            created_at, updated_at, active
+        FROM scraper_configs
+        WHERE id = $1
+        "#,
+        id
+    )
+    .fetch_optional(&db_pool)
+    .await
+    .map_err(AppError::from)?
+    .ok_or_else(|| AppError::NotFound(format!("Config not found: {}", id)))?;
+    
+    // Create HATEOAS links
+    let links = serde_json::json!({
+        "self": { "href": format!("/api/configs/{}", config.id) },
+        "jobs": { "href": format!("/api/configs/{}/jobs", config.id) },
+        "start": { "href": format!("/api/configs/{}/start", config.id) }
+    });
+    
+    Ok(Json(ConfigResponse {
+        config,
+        _links: links,
+    }))
+}
+
+pub async fn list_configs(
+    State(db_pool): State<PgPool>,
+    Query(params): Query<ListConfigsQuery>,
+) -> Result<Json<Vec<ConfigResponse>>, AppError> {
+    let limit = params.limit.unwrap_or(10);
+    let offset = params.offset.unwrap_or(0);
+    
+    let configs = sqlx::query_as!(
+        ScraperConfig,
+        r#"
+        SELECT 
+            id, name, description, base_url, 
+            include_patterns, exclude_patterns, max_depth, 
+            max_pages_per_job, respect_robots_txt, user_agent, 
+            request_delay_ms, max_concurrent_requests, schedule, 
+            headers as "headers: serde_json::Value", 
+            created_at, updated_at, active
+        FROM scraper_configs
+        ORDER BY created_at DESC
+        LIMIT $1 OFFSET $2
+        "#,
+        limit,
+        offset
+    )
+    .fetch_all(&db_pool)
+    .await
+    .map_err(AppError::from)?;
+    
+    let responses = configs
+        .into_iter()
+        .map(|config| {
+            let links = serde_json::json!({
+                "self": { "href": format!("/api/configs/{}", config.id) },
+                "jobs": { "href": format!("/api/configs/{}/jobs", config.id) },
+                "start": { "href": format!("/api/configs/{}/start", config.id) }
+            });
+            
+            ConfigResponse {
+                config,
+                _links: links,
+            }
+        })
+        .collect();
+    
+    Ok(Json(responses))
+}
+
+pub async fn update_config(
+    State(db_pool): State<PgPool>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<CreateConfigRequest>,
+) -> Result<Json<ConfigResponse>, AppError> {
+    // Get the existing config
+    let mut config = sqlx::query_as!(
+        ScraperConfig,
+        r#"
+        SELECT 
+            id, name, description, base_url, 
+            include_patterns, exclude_patterns, max_depth, 
+            max_pages_per_job, respect_robots_txt, user_agent, 
+            request_delay_ms, max_concurrent_requests, schedule, 
+            headers as "headers: serde_json::Value", 
+            created_at, updated_at, active
+        FROM scraper_configs
+        WHERE id = $1
+        "#,
+        id
+    )
+    .fetch_optional(&db_pool)
+    .await
+    .map_err(AppError::from)?
+    .ok_or_else(|| AppError::NotFound(format!("Config not found: {}", id)))?;
+    
+    // Update fields
+    config.name = payload.name;
+    config.description = payload.description;
+    config.base_url = payload.base_url;
+    config.include_patterns = payload.include_patterns;
+    config.exclude_patterns = payload.exclude_patterns;
+    config.max_depth = payload.max_depth;
+    config.max_pages_per_job = payload.max_pages_per_job;
+    config.respect_robots_txt = payload.respect_robots_txt.unwrap_or(config.respect_robots_txt);
+    config.user_agent = payload.user_agent.unwrap_or(config.user_agent);
+    config.request_delay_ms = payload.request_delay_ms.unwrap_or(config.request_delay_ms);
+    config.max_concurrent_requests = payload.max_concurrent_requests.unwrap_or(config.max_concurrent_requests);
+    config.schedule = payload.schedule.or(config.schedule);
+    config.headers = payload.headers.unwrap_or(config.headers);
+    config.updated_at = chrono::Utc::now();
+    
+    // Update in database
+    sqlx::query!(
+        r#"
+        UPDATE scraper_configs
+        SET 
+            name = $1, description = $2, base_url = $3,
+            include_patterns = $4, exclude_patterns = $5, max_depth = $6,
+            max_pages_per_job = $7, respect_robots_txt = $8, user_agent = $9,
+            request_delay_ms = $10, max_concurrent_requests = $11, schedule = $12,
+            headers = $13, updated_at = $14
+        WHERE id = $15
+        "#,
+        config.name,
+        config.description,
+        config.base_url,
+        &config.include_patterns as _,
+        &config.exclude_patterns as _,
+        config.max_depth,
+        config.max_pages_per_job,
+        config.respect_robots_txt,
+        config.user_agent,
+        config.request_delay_ms,
+        config.max_concurrent_requests,
+        config.schedule,
+        config.headers,
+        config.updated_at,
+        config.id
+    )
+    .execute(&db_pool)
+    .await
+    .map_err(AppError::from)?;
+    
+    // Create HATEOAS links
+    let links = serde_json::json!({
+        "self": { "href": format!("/api/configs/{}", config.id) },
+        "jobs": { "href": format!("/api/configs/{}/jobs", config.id) },
+        "start": { "href": format!("/api/configs/{}/start", config.id) }
+    });
+    
+    Ok(Json(ConfigResponse {
+        config,
+        _links: links,
+    }))
+}
+
+pub async fn start_job(
+    State(scraper_service): State<Arc<ScraperService>>,
+    Path(id): Path<Uuid>,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let job = scraper_service.create_job(id).await.map_err(|e| {
+        match e.downcast::<AppError>() {
+            Ok(app_error) => app_error,
+            Err(other) => AppError::Internal(other.to_string()),
+        }
+    })?;
+    
+    let response = serde_json::json!({
+        "job_id": job.id,
+        "status": job.status.to_string(),
+        "_links": {
+            "self": { "href": format!("/api/jobs/{}", job.id) },
+            "config": { "href": format!("/api/configs/{}", job.config_id) }
+        }
+    });
+    
+    Ok((StatusCode::CREATED, Json(response)))
+} 
