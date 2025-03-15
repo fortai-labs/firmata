@@ -47,6 +47,7 @@ impl Default for CrawlerConfig {
 }
 
 /// Crawler for scraping websites
+#[derive(Clone)]
 pub struct Crawler {
     http_client: HttpClient,
     config: CrawlerConfig,
