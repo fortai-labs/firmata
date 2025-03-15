@@ -1,62 +1,81 @@
-# Turborepo starter
+# 🫂 Firmata -- Legal-Oriented Web Scraper as a Service
 
-This Turborepo includes a Rust-based legal website scraper service alongside Next.js applications.
+## Introduction
 
-## Using this example
+Firmata is a cutting-edge, high-performance web scraping platform specifically engineered for the legal domain. Built with Rust at its core, this service combines blazing-fast performance with enterprise-grade reliability to transform how legal professionals gather and process web-based legal content.
 
-Run the following command:
+In today's data-driven legal landscape, the ability to efficiently extract, process, and analyze content from legal websites is a critical competitive advantage. Firmata addresses this need by providing a robust, scalable solution that can handle everything from small targeted crawls to large-scale data acquisition projects with minimal resource overhead.
 
-```sh
-npx create-turbo@latest
-```
+What sets Firmata apart:
 
-## What's inside?
+- **Unparalleled Performance**: Leveraging Rust's zero-cost abstractions and memory safety guarantees, Firmata delivers exceptional throughput while maintaining minimal resource footprint
+- **Legal-Domain Awareness**: Purpose-built for legal content with specialized handling for case law, statutes, regulations, and legal commentary
+- **Enterprise Scalability**: Designed from the ground up to scale horizontally across distributed infrastructure
+- **Compliance-First Approach**: Built-in respect for robots.txt, configurable request delays, and ethical crawling practices
+- **Seamless Integration**: Comprehensive API and webhook system to integrate with existing legal tech stacks
 
-This Turborepo includes the following packages/apps:
+## Service Architecture
 
-### Apps and Packages
+Firmata implements a sophisticated clean architecture that ensures maintainability, testability, and extensibility as the platform evolves. This architectural approach creates clear boundaries between system concerns, allowing for independent evolution of components.
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `service`: a [Rust](https://www.rust-lang.org/)-based legal website scraper microservice
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+### Core Architectural Layers
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/), except for the Rust-based service.
+![Firmata Architecture](https://via.placeholder.com/800x400?text=Firmata+Architecture+Diagram)
 
-### Legal Website Scraper Service
+#### Domain Layer
 
-The Rust-based legal website scraper service is designed to efficiently crawl and extract content from legal websites. Key features include:
+The heart of Firmata, containing:
 
-- **High Performance**: Built with Rust for optimal speed and resource efficiency
-- **Configurable Crawling**: Supports custom crawling rules, depth limits, and URL patterns
-- **Content Processing**: Converts HTML to Markdown for easier consumption
-- **Scalable Architecture**: Uses Redis for job queuing and PostgreSQL for data persistence
-- **S3 Storage**: Stores crawled content in S3-compatible storage
-- **RESTful API**: Provides a comprehensive API for managing scraper configurations, jobs, and results
-- **Webhook Support**: Notifies external systems about scraping events
-- **Analytics**: Tracks performance metrics and crawling statistics
+- **Rich Domain Models**: Comprehensive representations of core entities (scraper configurations, jobs, pages, webhooks)
+- **Domain Services**: Encapsulated business logic for content extraction, URL normalization, and content classification
+- **Domain Events**: Event-driven architecture enabling reactive processing and extensibility
+- **Value Objects**: Immutable, self-validating types ensuring data integrity throughout the system
 
-#### Service Architecture
+#### Application Layer
 
-The service follows a clean architecture approach with clear separation of concerns:
+The orchestration layer that coordinates domain activities:
 
-- **Domain Layer**: Core business entities and logic (jobs, pages, configs, webhooks)
-- **Application Layer**: Use cases and service coordination
-- **Infrastructure Layer**: External systems integration (database, queue, storage)
-- **API Layer**: RESTful endpoints with HATEOAS principles
+- **Use Cases**: Discrete, focused operations that implement specific business requirements
+- **Command/Query Handlers**: Implementation of CQRS principles for clear separation of read and write operations
+- **Application Services**: Coordination of multiple domain operations into cohesive workflows
+- **Event Handlers**: Processing of domain events to trigger side effects and maintain system consistency
 
-#### Technology Stack
+#### Infrastructure Layer
 
-- **Axum**: Web framework for building the API
-- **Tokio**: Asynchronous runtime
-- **SQLx**: Type-safe database access
-- **Redis**: Job queuing and distributed processing
-- **AWS SDK**: S3-compatible storage integration
-- **Tonic**: gRPC client for Markdown conversion
+The technical foundation enabling external system integration:
 
-#### API Examples
+- **Database Adapters**: Type-safe PostgreSQL integration via SQLx with optimized query patterns
+- **Queue Management**: Redis-based job distribution with prioritization and failure handling
+- **Storage Services**: S3-compatible content storage with efficient binary handling
+- **HTTP Clients**: Robust web clients with retry logic, circuit breaking, and rate limiting
+- **Markdown Processing**: High-performance HTML-to-Markdown conversion pipeline
+
+#### API Layer
+
+The external interface exposing Firmata's capabilities:
+
+- **RESTful Endpoints**: Comprehensive API following REST best practices
+- **HATEOAS Implementation**: Hypermedia controls for discoverable API navigation
+- **Authentication/Authorization**: Secure access control with fine-grained permissions
+- **Rate Limiting**: Protection against API abuse
+- **Comprehensive Documentation**: OpenAPI/Swagger specifications for all endpoints
+
+### Cross-Cutting Concerns
+
+- **Observability**: Structured logging, metrics collection, and distributed tracing
+- **Error Handling**: Consistent error representation and recovery strategies
+- **Configuration Management**: Environment-based configuration with sensible defaults
+- **Security**: Input validation, output encoding, and protection against common vulnerabilities
+
+This architecture enables Firmata to deliver exceptional performance while maintaining the flexibility to adapt to evolving legal data acquisition needs. The clean separation of concerns allows for targeted optimization and independent scaling of system components based on workload characteristics.
+
+---
+
+By leveraging this sophisticated architecture, Firmata transforms the complex challenge of legal web scraping into a streamlined, reliable process that legal professionals can depend on for their most critical data acquisition needs.
+
+
+
+# API Examples
 
 The service provides a RESTful API with the following endpoints:
 
