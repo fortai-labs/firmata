@@ -7,55 +7,58 @@ description = "Legal website scraper microservice"
 
 [dependencies]
 # Core functionality
-tokio = { version = "1.35", features = ["full"] }
-async-trait = "0.1.77"
-futures = "0.3.30"
-anyhow = "1.0.79"
-thiserror = "1.0.56"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-serde = { version = "1.0.195", features = ["derive"] }
-serde_json = "1.0.111"
-chrono = { version = "0.4.31", features = ["serde"] }
-uuid = { version = "1.6.1", features = ["v4", "serde"] }
+tokio = { version = "1.35.0", features = ["full"] }
+async-trait = "0.1.88"
+futures = "0.3.31"
+anyhow = "1.0.97"
+thiserror = "2.0.12"
+chrono = { version = "0.4.40", features = ["serde"] }
+uuid = { version = "1.16.0", features = ["v4", "serde"] }
+
+# Logging and tracing
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 
 # Web scraping
-reqwest = { version = "0.11.23", features = ["json", "cookies", "gzip"] }
-scraper = "0.18.1"
-url = "2.5.0"
+reqwest = { version = "0.12.14", features = ["json", "cookies", "gzip"] }
+scraper = "0.23.1"
+url = "2.5.4"
 robotstxt = "0.3.0"
-regex = "1.10.2"
+regex = "1.11.1"
 md5 = "0.7.0"
 
 # API and gRPC
-axum = "0.7.4"
-tonic = "0.10.2"
-prost = "0.12.3"
-tower = "0.4.13"
-tower-http = { version = "0.5.0", features = ["trace", "cors", "compression-gzip"] }
+axum = "0.8.1"
+tonic = "0.12.3"
+prost = "0.13.5"
+tower = "0.5.2"
+tower-http = { version = "0.6.2", features = ["trace", "cors", "compression-gzip"] }
 
 # Database and storage
-sqlx = { version = "0.7.3", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
-redis = { version = "0.24.0", features = ["tokio-comp", "connection-manager"] }
-aws-sdk-s3 = "1.12.0"
-aws-config = "1.1.1"
+sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
+redis = { version = "0.29.1", features = ["tokio-comp", "connection-manager"] }
+aws-sdk-s3 = { version = "1.79.0", features = ["behavior-version-latest"] }
+aws-config = "1.6.0"
 
 # Job queue and scheduling
-deadpool-redis = "0.14.0"
-cron = "0.12.0"
+deadpool-redis = "0.20.0"
+cron = "0.15.0"
 
 # Configuration
-config = "0.13.4"
+config = "0.15.11"
 dotenv = "0.15.0"
 
 [dev-dependencies]
-mockall = "0.12.1"
+mockall = "0.13.1"
 tokio-test = "0.4.3"
-wiremock = "0.5.22"
 mockito = "1.2.0"
 
 [build-dependencies]
-tonic-build = "0.10.2"
+tonic-build = "0.12.3"
 
 [[bin]]
 name = "scraper-service"
@@ -63,4 +66,4 @@ path = "src/main.rs"
 
 [[bin]]
 name = "migrate"
-path = "src/bin/migrate.rs" 
+path = "src/bin/migrate.rs"
