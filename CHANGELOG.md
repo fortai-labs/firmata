@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - URL filtering based on include/exclude patterns
     - HTML content processing with link extraction
     - Content size limits for safety
+  - Comprehensive test suite
+    - Unit tests for crawler functionality
+    - Integration tests with mock HTTP server
+    - Tests for rate limiting and concurrency
+    - Tests for robots.txt parsing and compliance
+    - Tests for URL filtering and pattern matching
 
 - Knowledge base enhancements
   - ADR 005: Rust-based Legal Website Scraper Microservice
