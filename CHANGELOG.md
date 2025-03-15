@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Tests for rate limiting and concurrency
     - Tests for robots.txt parsing and compliance
     - Tests for URL filtering and pattern matching
+  - CI/CD pipeline with GitHub Actions
+    - Automated linting with rustfmt and clippy
+    - Automated testing with PostgreSQL, Redis, and MinIO
+    - Automated building and artifact generation
+    - Docker image building and publishing
+    - Deployment to production environment
+  - Docker support
+    - Dockerfile for containerized deployment
+    - Docker Compose for local development
+    - Development environment setup scripts
 
 - Knowledge base enhancements
   - ADR 005: Rust-based Legal Website Scraper Microservice
