@@ -21,7 +21,7 @@ pub struct JobStatsQuery {
 pub struct JobStats {
     job_id: Uuid,
     config_id: Uuid,
-    start_time: DateTime<Utc>,
+    start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
     status: String,
     total_pages: i64,
@@ -56,7 +56,7 @@ pub async fn get_job_stats(
             COUNT(p.id) as total_pages,
             COUNT(CASE WHEN p.error_message IS NULL THEN 1 END) as successful_pages,
             COUNT(CASE WHEN p.error_message IS NOT NULL THEN 1 END) as failed_pages,
-            AVG(EXTRACT(EPOCH FROM (p.crawled_at - j.started_at)) * 1000) as avg_page_time_ms
+            AVG(CASE WHEN j.started_at IS NOT NULL THEN EXTRACT(EPOCH FROM (p.crawled_at - j.started_at)) * 1000 END) as avg_page_time_ms
         FROM jobs j
         LEFT JOIN pages p ON j.id = p.job_id
     ".to_string();
@@ -122,7 +122,7 @@ pub async fn get_config_stats(
             COUNT(CASE WHEN p.error_message IS NOT NULL THEN 1 END) as failed_pages,
             AVG(EXTRACT(EPOCH FROM (j.completed_at - j.started_at))) as avg_job_time_seconds,
             MAX(j.started_at) as last_job_time
-        FROM configs c
+        FROM scraper_configs c
         LEFT JOIN jobs j ON c.id = j.config_id
         LEFT JOIN pages p ON j.id = p.job_id
         GROUP BY c.id, c.name

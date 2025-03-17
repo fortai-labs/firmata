@@ -4,6 +4,8 @@ use aws_config::Region;
 use aws_sdk_s3::{Client,  config::Credentials};
 use std::io::Cursor;
 use uuid::Uuid;
+use tracing::{debug, error};
+use md5;
 
 use crate::config::settings::Storage as StorageConfig;
 use crate::utils::error::AppError;
@@ -66,11 +68,11 @@ impl S3StorageClient {
     }
 
     fn generate_path(&self, job_id: &Uuid, url: &str, extension: &str) -> String {
-        // Normalize URL for path
-        let normalized_url = url.replace("://", "/").replace(":", "_");
+        // Create a hash of the URL to avoid path issues
+        let url_hash = format!("{:x}", md5::compute(url.as_bytes()));
         
-        // Generate a path with job ID and normalized URL
-        format!("{}/{}.{}", job_id, normalized_url, extension)
+        // Generate a path with job ID and URL hash
+        format!("{}/{}.{}", job_id, url_hash, extension)
     }
 }
 
@@ -80,38 +82,52 @@ impl StorageClient for S3StorageClient {
         let path = self.generate_path(job_id, url, "html");
         
         // Upload the content
-        self.client
+        debug!("Attempting to upload HTML to S3 bucket: {}, path: {}", self.bucket, path);
+        
+        // Create a simpler put_object request
+        let request = self.client
             .put_object()
             .bucket(&self.bucket)
             .key(&path)
             .body(content.as_bytes().to_vec().into())
-            .content_type("text/html")
-            .metadata("source_url", url)
-            .metadata("job_id", job_id.to_string())
-            .send()
-            .await
-            .map_err(|e| AppError::Storage(format!("Failed to upload HTML: {}", e)))?;
-        
-        Ok(path)
+            .content_type("text/html");
+            
+        match request.send().await {
+            Ok(_) => {
+                debug!("Successfully uploaded HTML to S3 bucket: {}, path: {}", self.bucket, path);
+                Ok(path)
+            },
+            Err(e) => {
+                error!("Failed to upload HTML to S3: {:?}", e);
+                Err(AppError::Storage(format!("Failed to upload HTML: {}", e)).into())
+            }
+        }
     }
 
     async fn upload_markdown(&self, job_id: &Uuid, url: &str, content: &str) -> Result<String> {
         let path = self.generate_path(job_id, url, "md");
         
         // Upload the content
-        self.client
+        debug!("Attempting to upload Markdown to S3 bucket: {}, path: {}", self.bucket, path);
+        
+        // Create a simpler put_object request
+        let request = self.client
             .put_object()
             .bucket(&self.bucket)
             .key(&path)
             .body(content.as_bytes().to_vec().into())
-            .content_type("text/markdown")
-            .metadata("source_url", url)
-            .metadata("job_id", job_id.to_string())
-            .send()
-            .await
-            .map_err(|e| AppError::Storage(format!("Failed to upload Markdown: {}", e)))?;
-        
-        Ok(path)
+            .content_type("text/markdown");
+            
+        match request.send().await {
+            Ok(_) => {
+                debug!("Successfully uploaded Markdown to S3 bucket: {}, path: {}", self.bucket, path);
+                Ok(path)
+            },
+            Err(e) => {
+                error!("Failed to upload Markdown to S3: {:?}", e);
+                Err(AppError::Storage(format!("Failed to upload Markdown: {}", e)).into())
+            }
+        }
     }
 
     async fn get_object(&self, path: &str) -> Result<String> {

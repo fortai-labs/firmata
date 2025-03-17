@@ -3,7 +3,7 @@ set -e
 
 # Start the development environment
 echo "Starting development environment..."
-docker-compose up -d postgres redis minio
+docker compose up -d postgres redis minio
 
 # Wait for services to be ready
 echo "Waiting for services to be ready..."

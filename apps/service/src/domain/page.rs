@@ -19,6 +19,11 @@ pub struct Page {
     pub error_message: Option<String>,
     pub depth: i32,
     pub parent_url: Option<String>,
+    
+    // Temporary field to hold HTML content, not stored in the database
+    #[sqlx(skip)]
+    #[serde(skip)]
+    pub html_content: Option<String>,
 }
 
 impl Page {
@@ -48,6 +53,7 @@ impl Page {
             error_message: None,
             depth,
             parent_url,
+            html_content: None,
         }
     }
 
@@ -75,6 +81,7 @@ impl Page {
             error_message: Some(error_message),
             depth,
             parent_url,
+            html_content: None,
         }
     }
 

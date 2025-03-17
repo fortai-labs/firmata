@@ -2,6 +2,7 @@ use anyhow::Result;
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
+use tracing::{info, error, debug, instrument};
 
 use crate::domain::job::{Job, JobStatus};
 use crate::domain::scraper_config::ScraperConfig;
@@ -15,10 +16,13 @@ pub struct ScraperService {
 
 impl ScraperService {
     pub fn new(db_pool: PgPool, job_queue: Arc<RedisJobQueue>) -> Self {
+        info!("Initializing ScraperService");
         Self { db_pool, job_queue }
     }
     
+    #[instrument(skip(self), err)]
     pub async fn get_config(&self, config_id: Uuid) -> Result<ScraperConfig> {
+        debug!("Fetching config with id: {}", config_id);
         let config = sqlx::query_as!(
             ScraperConfig,
             r#"
@@ -37,21 +41,32 @@ impl ScraperService {
         .fetch_optional(&self.db_pool)
         .await?;
         
+        match &config {
+            Some(c) => debug!("Found config: {} ({})", c.name, c.id),
+            None => error!("Config not found with id: {}", config_id),
+        }
+        
         config.ok_or_else(|| AppError::NotFound(format!("Config not found: {}", config_id)).into())
     }
     
+    #[instrument(skip(self), err)]
     pub async fn create_job(&self, config_id: Uuid) -> Result<Job> {
+        info!("Creating new job for config: {}", config_id);
+        
         // Verify config exists
         let config = self.get_config(config_id).await?;
         
         if !config.active {
+            error!("Cannot create job: Config {} is not active", config_id);
             return Err(AppError::InvalidInput(format!("Config is not active: {}", config_id)).into());
         }
         
         // Create job
         let job = Job::new(config_id);
+        debug!("Created job with id: {}", job.id);
         
         // Save to database
+        debug!("Saving job {} to database", job.id);
         sqlx::query!(
             r#"
             INSERT INTO jobs (
@@ -81,12 +96,18 @@ impl ScraperService {
         .await?;
         
         // Enqueue job
-        self.job_queue.enqueue("scraper_jobs", &job.id).await?;
+        debug!("Enqueueing job {} to job queue", job.id);
+        match self.job_queue.enqueue("scraper_jobs", &job.id).await {
+            Ok(_) => info!("Successfully enqueued job: {}", job.id),
+            Err(e) => error!("Failed to enqueue job {}: {:?}", job.id, e),
+        }
         
         Ok(job)
     }
     
+    #[instrument(skip(self), err)]
     pub async fn get_job(&self, job_id: Uuid) -> Result<Job> {
+        debug!("Fetching job with id: {}", job_id);
         let job = sqlx::query_as!(
             Job,
             r#"
@@ -105,22 +126,33 @@ impl ScraperService {
         .fetch_optional(&self.db_pool)
         .await?;
         
+        match &job {
+            Some(j) => debug!("Found job: {} with status: {:?}", j.id, j.status),
+            None => error!("Job not found with id: {}", job_id),
+        }
+        
         job.ok_or_else(|| AppError::NotFound(format!("Job not found: {}", job_id)).into())
     }
     
+    #[instrument(skip(self), err)]
     pub async fn cancel_job(&self, job_id: Uuid) -> Result<Job> {
+        info!("Attempting to cancel job: {}", job_id);
+        
         // Get job
         let mut job = self.get_job(job_id).await?;
         
         // Check if job can be cancelled
         if job.status != JobStatus::Pending && job.status != JobStatus::Running {
+            error!("Cannot cancel job {}: current status is {:?}", job_id, job.status);
             return Err(AppError::InvalidInput(format!("Job cannot be cancelled: {}", job_id)).into());
         }
         
         // Update job status
+        debug!("Cancelling job {}: changing status from {:?} to Cancelled", job_id, job.status);
         job.cancel();
         
         // Update database
+        debug!("Updating job {} status in database", job_id);
         sqlx::query!(
             r#"
             UPDATE jobs
@@ -135,10 +167,13 @@ impl ScraperService {
         .execute(&self.db_pool)
         .await?;
         
+        info!("Successfully cancelled job: {}", job_id);
         Ok(job)
     }
     
+    #[instrument(skip(self), err)]
     pub async fn list_jobs(&self, limit: i64, offset: i64) -> Result<Vec<Job>> {
+        debug!("Listing jobs with limit: {}, offset: {}", limit, offset);
         let rows = sqlx::query!(
             r#"
             SELECT 
@@ -158,7 +193,7 @@ impl ScraperService {
         .fetch_all(&self.db_pool)
         .await?;
         
-        let jobs = rows.into_iter().map(|row| {
+        let jobs: Vec<Job> = rows.into_iter().map(|row| {
             let status = match row.status.as_str() {
                 "pending" => JobStatus::Pending,
                 "running" => JobStatus::Running,
@@ -186,10 +221,13 @@ impl ScraperService {
             }
         }).collect();
         
+        info!("Retrieved {} jobs", jobs.len());
         Ok(jobs)
     }
     
+    #[instrument(skip(self), err)]
     pub async fn list_jobs_by_config(&self, config_id: Uuid, limit: i64, offset: i64) -> Result<Vec<Job>> {
+        debug!("Listing jobs for config: {} with limit: {}, offset: {}", config_id, limit, offset);
         let jobs = sqlx::query_as!(
             Job,
             r#"
@@ -212,6 +250,7 @@ impl ScraperService {
         .fetch_all(&self.db_pool)
         .await?;
         
+        info!("Retrieved {} jobs for config: {}", jobs.len(), config_id);
         Ok(jobs)
     }
 } 

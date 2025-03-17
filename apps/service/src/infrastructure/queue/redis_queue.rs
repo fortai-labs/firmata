@@ -5,6 +5,7 @@ use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
+use tracing::{debug, info, error, warn};
 
 use crate::config::settings::Redis as RedisConfig;
 use crate::utils::error::AppError;
@@ -46,7 +47,7 @@ impl RedisJobQueue {
         self
     }
     
-    async fn get_connection(&self) -> Result<deadpool_redis::Connection> {
+    pub async fn get_connection(&self) -> Result<deadpool_redis::Connection> {
         self.pool.get().await.map_err(|e| AppError::Redis(e.to_string()).into())
     }
 }
@@ -68,28 +69,53 @@ impl JobQueue for RedisJobQueue {
     
     async fn dequeue<T: DeserializeOwned + Send + Sync>(&self, queue: &str) -> Result<Option<(String, T)>> {
         let mut conn = self.get_connection().await?;
+        let queue_key = format!("queue:{}", queue);
+        let processing_key = format!("processing:{}", queue);
         
-        // Move from queue to processing list with BRPOPLPUSH
-        // This is an atomic operation that ensures job safety
-        let result: Option<String> = conn.brpoplpush(
-            format!("queue:{}", queue),
-            format!("processing:{}", queue),
-            DEFAULT_POLL_INTERVAL as f64  // Convert to f64 for brpoplpush
-        ).await.map_err(|e| AppError::Redis(e.to_string()))?;
+        // Use BRPOPLPUSH to atomically move a job from the queue to a processing list
+        // This ensures that jobs are not lost if the worker crashes
+        let job_data: Option<String> = conn.brpoplpush(&queue_key, &processing_key, DEFAULT_POLL_INTERVAL as f64).await
+            .map_err(|e| AppError::Redis(e.to_string()))?;
         
-        if let Some(job_data) = result {
-            // Generate a job ID for tracking
-            let job_id = Uuid::new_v4().to_string();
+        if let Some(job_data) = job_data {
+            debug!("Dequeued job data: {}", job_data);
             
-            // Set expiration on the processing item
-            conn.set_ex(
-                format!("job:{}:{}", queue, job_id),
-                &job_data,
-                self.visibility_timeout as u64  // Convert to u64 for set_ex
-            ).await.map_err(|e| AppError::Redis(e.to_string()))?;
+            // Parse the job data to extract the job ID
+            // The job data might be a JSON string or just a UUID string
+            let job_id = if job_data.starts_with('"') && job_data.ends_with('"') {
+                // It's a quoted string, remove the quotes
+                job_data[1..job_data.len()-1].to_string()
+            } else if job_data.starts_with('{') {
+                // It's a JSON object
+                match serde_json::from_str::<serde_json::Value>(&job_data) {
+                    Ok(json) => {
+                        if let Some(id) = json.get("job_id").and_then(|id| id.as_str()) {
+                            id.to_string()
+                        } else {
+                            // Fallback to using the job data as the ID
+                            job_data.clone()
+                        }
+                    },
+                    Err(_) => {
+                        // Fallback to using the job data as the ID
+                        job_data.clone()
+                    }
+                }
+            } else {
+                // Use the job data as the ID
+                job_data.clone()
+            };
+            
+            debug!("Using job ID: {}", job_id);
+            
+            // Set the job data with an expiration time
+            let job_key = format!("job:{}:{}", queue, job_id);
+            conn.set_ex(&job_key, &job_data, self.visibility_timeout as u64)
+                .await.map_err(|e| AppError::Redis(e.to_string()))?;
             
             // Deserialize the job data
-            let job: T = serde_json::from_str(&job_data)?;
+            let job: T = serde_json::from_str(&job_data)
+                .map_err(|e| AppError::Internal(format!("Serialization error: {}", e.to_string())))?;
             
             Ok(Some((job_id, job)))
         } else {
@@ -100,9 +126,43 @@ impl JobQueue for RedisJobQueue {
     async fn complete(&self, queue: &str, job_id: &str) -> Result<()> {
         let mut conn = self.get_connection().await?;
         
-        // Remove from processing list and job key
-        conn.del(format!("job:{}:{}", queue, job_id)).await
-            .map_err(|e| AppError::Redis(e.to_string()))?;
+        debug!("Completing job {} in queue {}", job_id, queue);
+        
+        // Remove the job from the processing list
+        let processing_key = format!("processing:{}", queue);
+        let job_key = format!("job:{}:{}", queue, job_id);
+        
+        // Check if job exists in processing list before removing
+        let exists: i32 = conn.exists(&processing_key).await
+            .map_err(|e| AppError::Redis(format!("Failed to check if processing list exists: {}", e)))?;
+        
+        debug!("Processing list {} exists: {}", processing_key, exists > 0);
+        
+        if exists > 0 {
+            // Check if job ID is in the processing list
+            let count: i32 = conn.llen(&processing_key).await
+                .map_err(|e| AppError::Redis(format!("Failed to get processing list length: {}", e)))?;
+            
+            debug!("Processing list {} has {} items", processing_key, count);
+            
+            let items: Vec<String> = conn.lrange(&processing_key, 0, -1).await
+                .map_err(|e| AppError::Redis(format!("Failed to get processing list items: {}", e)))?;
+            
+            debug!("Processing list items: {:?}", items);
+            
+            let job_in_list = items.contains(&job_id.to_string());
+            debug!("Job {} is in processing list: {}", job_id, job_in_list);
+        }
+        
+        // Use a pipeline to execute both commands atomically
+        let mut pipe = redis::pipe();
+        pipe.lrem(&processing_key, 0, job_id).del(&job_key);
+        
+        let result: (i32, i32) = pipe.query_async(&mut conn).await
+            .map_err(|e| AppError::Redis(format!("Failed to execute pipeline: {}", e)))?;
+        
+        debug!("Complete job result: removed {} items from processing list, deleted {} job keys", result.0, result.1);
+        debug!("Completed job {} in queue {}", job_id, queue);
         
         Ok(())
     }

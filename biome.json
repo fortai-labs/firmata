@@ -20,7 +20,10 @@
 			"./apps/storybook/tsconfig.*",
 			"./apps/storybook/src/stories/**",
 			"**/storybook/**",
-			"**/vitest-config/**"
+			"**/vitest-config/**",
+			"**/apps/service/**",
+			"**/.cursor/**",
+			"**/components/**"
 		]
 	}
 }

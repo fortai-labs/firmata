@@ -9,6 +9,7 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use regex::Regex;
 use md5;
+use uuid;
 
 use crate::domain::page::Page;
 use crate::utils::error::AppError;
@@ -84,43 +85,36 @@ impl Crawler {
         include_patterns: &[String],
         exclude_patterns: &[String],
     ) -> Result<(Page, Vec<String>)> {
-        // Check if we should crawl this URL based on patterns
-        if !self.should_crawl_url(url, include_patterns, exclude_patterns) {
-            return Err(AppError::InvalidInput(format!("URL does not match include/exclude patterns: {}", url)).into());
-        }
+        debug!("Crawling URL: {}", url);
         
         // Normalize the URL
         let normalized_url = self.normalize_url(url)?;
         
-        // Check robots.txt if enabled
+        // Check if the URL should be crawled
+        if !self.should_crawl_url(&normalized_url, include_patterns, exclude_patterns) {
+            return Err(AppError::InvalidInput(format!("URL does not match include/exclude patterns: {}", url)).into());
+        }
+        
+        // Extract the domain and path
+        let domain = self.extract_domain(&normalized_url)?;
+        let path = self.extract_path(&normalized_url)?;
+        
+        // Check robots.txt
         if self.config.respect_robots_txt {
-            let domain = self.extract_domain(&normalized_url)?;
-            let path = self.extract_path(&normalized_url)?;
-            
-            if !self.is_allowed_by_robots_txt(&domain, &path).await? {
+            let allowed = self.is_allowed_by_robots_txt(&domain, &path).await?;
+            if !allowed {
                 return Err(AppError::InvalidInput(format!("URL is disallowed by robots.txt: {}", url)).into());
             }
         }
         
-        // Acquire semaphore to limit concurrent requests
-        let _permit = self.semaphore.clone().acquire_owned().await?;
-        
-        // Apply rate limiting for the domain
-        let domain = self.extract_domain(&normalized_url)?;
+        // Apply rate limiting
         self.apply_rate_limiting(&domain).await;
         
-        // Make the HTTP request with retries
+        // Make the request
         let response = self.make_request_with_retries(&normalized_url).await?;
         
         // Process the response
-        let (page, discovered_urls) = self.process_response(
-            response,
-            &normalized_url,
-            depth,
-            parent_url,
-        ).await?;
-        
-        Ok((page, discovered_urls))
+        self.process_response(response, &normalized_url, depth, parent_url).await
     }
     
     /// Check if a URL should be crawled based on include/exclude patterns
@@ -264,67 +258,69 @@ impl Crawler {
         let status = response.status();
         let headers = response.headers().clone();
         
-        // Convert headers to a JSON value
-        let headers_json = serde_json::to_value(
-            headers.iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect::<HashMap<String, String>>()
-        )?;
-        
-        // Check content length if available
-        if let Some(content_length) = headers.get("content-length") {
-            if let Ok(length) = content_length.to_str()?.parse::<usize>() {
-                if length > self.config.max_page_size_bytes {
-                    return Err(AppError::InvalidInput(
-                        format!("Content too large: {} bytes (max: {} bytes)", length, self.config.max_page_size_bytes)
-                    ).into());
-                }
+        // Convert headers to a JSON object
+        let mut headers_json = serde_json::Map::new();
+        for (name, value) in headers.iter() {
+            if let Ok(value_str) = value.to_str() {
+                headers_json.insert(name.to_string(), serde_json::Value::String(value_str.to_string()));
             }
         }
         
-        // Get the response body
-        let body = response.text().await?;
+        // Check if the response is successful
+        if !status.is_success() {
+            return Err(AppError::Scraper(format!("HTTP error: {}", status)).into());
+        }
         
-        // Calculate content hash
-        let content_hash = format!("{:x}", md5::compute(&body));
+        // Get the content type
+        let content_type = headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/html");
         
-        // Extract title
-        let title = self.extract_title(&body);
+        // Check if the content type is HTML
+        if !content_type.contains("text/html") {
+            return Err(AppError::Scraper(format!("Unsupported content type: {}", content_type)).into());
+        }
         
-        // Extract links if status is OK
-        let discovered_urls = if status == StatusCode::OK {
-            self.extract_links(&body, url)
-        } else {
-            Vec::new()
-        };
+        // Get the HTML content
+        let html_content = response.text().await
+            .map_err(|e| AppError::Scraper(format!("Failed to get response body: {}", e)))?;
         
-        // Create the page object
+        // Check if the content is too large
+        if html_content.len() > self.config.max_page_size_bytes {
+            return Err(AppError::Scraper(format!("Content too large: {} bytes", html_content.len())).into());
+        }
+        
+        // Calculate a hash of the content
+        let content_hash = format!("{:x}", md5::compute(html_content.as_bytes()));
+        
+        // Extract the title
+        let title = self.extract_title(&html_content);
+        
+        // Extract links
+        let links = self.extract_links(&html_content, url);
+        
+        // Create a page object
         let page = Page {
             id: uuid::Uuid::new_v4(),
-            job_id: uuid::Uuid::nil(), // This will be set by the caller
+            job_id: uuid::Uuid::default(), // This will be set by the worker
             url: url.to_string(),
-            normalized_url: self.normalize_url(url)?,
-            content_hash: content_hash,
+            normalized_url: url.to_string(),
+            content_hash,
             http_status: status.as_u16() as i32,
-            http_headers: headers_json,
+            http_headers: serde_json::Value::Object(headers_json),
             crawled_at: chrono::Utc::now(),
-            html_storage_path: None, // This will be set by the caller
-            markdown_storage_path: None, // This will be set by the caller
+            html_storage_path: None,
+            markdown_storage_path: None,
             title,
-            metadata: serde_json::json!({
-                "content_length": body.len(),
-                "content_type": headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or(""),
-            }),
-            error_message: if status.is_client_error() || status.is_server_error() {
-                Some(format!("HTTP error: {}", status))
-            } else {
-                None
-            },
+            metadata: serde_json::json!({}),
+            error_message: None,
             depth,
             parent_url,
+            html_content: Some(html_content), // Store the HTML content temporarily
         };
         
-        Ok((page, discovered_urls))
+        Ok((page, links))
     }
     
     /// Extract the title from HTML content

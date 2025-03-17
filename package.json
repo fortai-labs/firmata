@@ -24,7 +24,9 @@
     "@commitlint/config-conventional": "^19.8.0",
     "@types/node": "^22.13.9",
     "husky": "^9.1.7",
+    "import-in-the-middle": "^1.13.1",
     "prettier": "^3.5.3",
+    "require-in-the-middle": "^7.5.2",
     "turbo": "^2.4.4",
     "typescript": "5.8.2"
   },

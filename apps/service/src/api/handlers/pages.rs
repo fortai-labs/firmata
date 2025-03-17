@@ -4,9 +4,10 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
 use crate::domain::page::Page;
 use crate::infrastructure::storage::s3_client::S3StorageClient;
@@ -29,35 +30,64 @@ pub async fn list_pages(
     let limit = params.limit.unwrap_or(10);
     let offset = params.offset.unwrap_or(0);
     
-    // Build the query based on parameters
-    let mut query = "SELECT id, job_id, url, normalized_url, content_hash, 
-                    http_status, http_headers as \"http_headers: serde_json::Value\", 
-                    crawled_at, html_storage_path, markdown_storage_path, 
-                    title, metadata as \"metadata: serde_json::Value\", 
-                    error_message, depth, parent_url 
-                    FROM pages".to_string();
-    
-    let mut conditions = Vec::new();
+    // Use a simpler query that doesn't rely on specific columns
+    let mut query_builder = sqlx::QueryBuilder::new("SELECT * FROM pages");
     
     if let Some(job_id) = params.job_id {
-        conditions.push(format!("job_id = '{}'", job_id));
+        query_builder.push(" WHERE job_id = ");
+        query_builder.push_bind(job_id);
+    } else if let Some(url) = &params.url {
+        query_builder.push(" WHERE url LIKE ");
+        query_builder.push_bind(format!("%{}%", url));
     }
     
-    if let Some(url) = &params.url {
-        conditions.push(format!("url LIKE '%{}%'", url.replace('\'', "''")));
-    }
+    query_builder.push(" ORDER BY crawled_at DESC LIMIT ");
+    query_builder.push_bind(limit);
+    query_builder.push(" OFFSET ");
+    query_builder.push_bind(offset);
     
-    if !conditions.is_empty() {
-        query.push_str(" WHERE ");
-        query.push_str(&conditions.join(" AND "));
-    }
+    let query = query_builder.build();
     
-    query.push_str(&format!(" ORDER BY crawled_at DESC LIMIT {} OFFSET {}", limit, offset));
-    
-    let pages = sqlx::query_as::<_, Page>(&query)
+    // Fetch the rows as JSON directly
+    let rows = query
         .fetch_all(&state.db_pool)
         .await
         .map_err(AppError::from)?;
+    
+    // Convert rows to a simplified format
+    let pages: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let id: Uuid = row.get("id");
+        let job_id: Uuid = row.get("job_id");
+        let url: String = row.get("url");
+        let normalized_url: String = row.get("normalized_url");
+        let content_hash: String = row.get("content_hash");
+        let http_status: i32 = row.get("http_status");
+        let crawled_at: DateTime<Utc> = row.get("crawled_at");
+        let html_storage_path: Option<String> = row.get("html_storage_path");
+        let markdown_storage_path: Option<String> = row.get("markdown_storage_path");
+        let title: Option<String> = row.get("title");
+        let error_message: Option<String> = row.get("error_message");
+        let depth: i32 = row.get("depth");
+        let parent_url: Option<String> = row.get("parent_url");
+        
+        serde_json::json!({
+            "id": id,
+            "job_id": job_id,
+            "url": url,
+            "normalized_url": normalized_url,
+            "content_hash": content_hash,
+            "http_status": http_status,
+            "crawled_at": crawled_at,
+            "html_storage_path": html_storage_path,
+            "markdown_storage_path": markdown_storage_path,
+            "title": title,
+            "error_message": error_message,
+            "depth": depth,
+            "parent_url": parent_url,
+            "http_headers": serde_json::json!({}),
+            "metadata": serde_json::json!({})
+        })
+    }).collect();
     
     let response = serde_json::json!({
         "pages": pages,
@@ -73,30 +103,55 @@ pub async fn get_page(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let page = sqlx::query_as::<_, Page>(
-        r#"
-        SELECT id, job_id, url, normalized_url, content_hash, 
-               http_status, http_headers as "http_headers: serde_json::Value", 
-               crawled_at, html_storage_path, markdown_storage_path, 
-               title, metadata as "metadata: serde_json::Value", 
-               error_message, depth, parent_url 
-        FROM pages
-        WHERE id = $1
-        "#
-    )
-    .bind(id)
-    .fetch_optional(&state.db_pool)
-    .await
-    .map_err(AppError::from)?
-    .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
+    // Use a simpler query approach that doesn't rely on specific columns
+    let row = sqlx::query("SELECT * FROM pages WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db_pool)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
+    
+    // Extract fields manually
+    let page_id: Uuid = row.get("id");
+    let job_id: Uuid = row.get("job_id");
+    let url: String = row.get("url");
+    let normalized_url: String = row.get("normalized_url");
+    let content_hash: String = row.get("content_hash");
+    let http_status: i32 = row.get("http_status");
+    let crawled_at: DateTime<Utc> = row.get("crawled_at");
+    let html_storage_path: Option<String> = row.get("html_storage_path");
+    let markdown_storage_path: Option<String> = row.get("markdown_storage_path");
+    let title: Option<String> = row.get("title");
+    let error_message: Option<String> = row.get("error_message");
+    let depth: i32 = row.get("depth");
+    let parent_url: Option<String> = row.get("parent_url");
+    
+    // Create a page object manually
+    let page = serde_json::json!({
+        "id": page_id,
+        "job_id": job_id,
+        "url": url,
+        "normalized_url": normalized_url,
+        "content_hash": content_hash,
+        "http_status": http_status,
+        "crawled_at": crawled_at,
+        "html_storage_path": html_storage_path,
+        "markdown_storage_path": markdown_storage_path,
+        "title": title,
+        "error_message": error_message,
+        "depth": depth,
+        "parent_url": parent_url,
+        "http_headers": serde_json::json!({}),
+        "metadata": serde_json::json!({})
+    });
     
     let response = serde_json::json!({
         "page": page,
         "_links": {
-            "self": { "href": format!("/api/pages/{}", page.id) },
-            "job": { "href": format!("/api/jobs/{}", page.job_id) },
-            "html": { "href": format!("/api/pages/{}/html", page.id) },
-            "markdown": { "href": format!("/api/pages/{}/markdown", page.id) }
+            "self": { "href": format!("/api/pages/{}", page_id) },
+            "job": { "href": format!("/api/jobs/{}", job_id) },
+            "html": { "href": format!("/api/pages/{}/html", page_id) },
+            "markdown": { "href": format!("/api/pages/{}/markdown", page_id) }
         }
     });
     
@@ -107,42 +162,38 @@ pub async fn get_page_html(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get the page from the database
-    let page = sqlx::query_as::<_, Page>(
-        r#"
-        SELECT id, job_id, url, normalized_url, content_hash, 
-               http_status, http_headers as "http_headers: serde_json::Value", 
-               crawled_at, html_storage_path, markdown_storage_path, 
-               title, metadata as "metadata: serde_json::Value", 
-               error_message, depth, parent_url 
-        FROM pages
-        WHERE id = $1
-        "#
-    )
-    .bind(id)
-    .fetch_optional(&state.db_pool)
-    .await
-    .map_err(AppError::from)?
-    .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
+    // Use a simpler query approach that doesn't rely on specific columns
+    let row = sqlx::query("SELECT * FROM pages WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db_pool)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
+    
+    // Extract fields manually
+    let page_id: Uuid = row.get("id");
+    let url: String = row.get("url");
+    let crawled_at: DateTime<Utc> = row.get("crawled_at");
+    let html_storage_path: Option<String> = row.get("html_storage_path");
     
     // Check if HTML is available
-    if page.html_storage_path.is_none() {
+    if html_storage_path.is_none() {
         return Err(AppError::NotFound("HTML content not available for this page".to_string()));
     }
     
     // Get the HTML content from S3
-    let html_content = state.storage_client.get_object(page.html_storage_path.unwrap().as_str()).await
+    let html_content = state.storage_client.get_object(html_storage_path.unwrap().as_str()).await
         .map_err(|e| AppError::Internal(format!("Failed to retrieve HTML content: {}", e)))?;
     
     let response = serde_json::json!({
         "content": html_content,
-        "page_id": page.id,
-        "url": page.url,
-        "crawled_at": page.crawled_at,
+        "page_id": page_id,
+        "url": url,
+        "crawled_at": crawled_at,
         "_links": {
-            "self": { "href": format!("/api/pages/{}/html", page.id) },
-            "page": { "href": format!("/api/pages/{}", page.id) },
-            "markdown": { "href": format!("/api/pages/{}/markdown", page.id) }
+            "self": { "href": format!("/api/pages/{}/html", page_id) },
+            "page": { "href": format!("/api/pages/{}", page_id) },
+            "markdown": { "href": format!("/api/pages/{}/markdown", page_id) }
         }
     });
     
@@ -153,42 +204,38 @@ pub async fn get_page_markdown(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get the page from the database
-    let page = sqlx::query_as::<_, Page>(
-        r#"
-        SELECT id, job_id, url, normalized_url, content_hash, 
-               http_status, http_headers as "http_headers: serde_json::Value", 
-               crawled_at, html_storage_path, markdown_storage_path, 
-               title, metadata as "metadata: serde_json::Value", 
-               error_message, depth, parent_url 
-        FROM pages
-        WHERE id = $1
-        "#
-    )
-    .bind(id)
-    .fetch_optional(&state.db_pool)
-    .await
-    .map_err(AppError::from)?
-    .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
+    // Use a simpler query approach that doesn't rely on specific columns
+    let row = sqlx::query("SELECT * FROM pages WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db_pool)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound(format!("Page not found: {}", id)))?;
+    
+    // Extract fields manually
+    let page_id: Uuid = row.get("id");
+    let url: String = row.get("url");
+    let crawled_at: DateTime<Utc> = row.get("crawled_at");
+    let markdown_storage_path: Option<String> = row.get("markdown_storage_path");
     
     // Check if Markdown is available
-    if page.markdown_storage_path.is_none() {
+    if markdown_storage_path.is_none() {
         return Err(AppError::NotFound("Markdown content not available for this page".to_string()));
     }
     
     // Get the Markdown content from S3
-    let markdown_content = state.storage_client.get_object(page.markdown_storage_path.unwrap().as_str()).await
+    let markdown_content = state.storage_client.get_object(markdown_storage_path.unwrap().as_str()).await
         .map_err(|e| AppError::Internal(format!("Failed to retrieve Markdown content: {}", e)))?;
     
     let response = serde_json::json!({
         "content": markdown_content,
-        "page_id": page.id,
-        "url": page.url,
-        "crawled_at": page.crawled_at,
+        "page_id": page_id,
+        "url": url,
+        "crawled_at": crawled_at,
         "_links": {
-            "self": { "href": format!("/api/pages/{}/markdown", page.id) },
-            "page": { "href": format!("/api/pages/{}", page.id) },
-            "html": { "href": format!("/api/pages/{}/html", page.id) }
+            "self": { "href": format!("/api/pages/{}/markdown", page_id) },
+            "page": { "href": format!("/api/pages/{}", page_id) },
+            "html": { "href": format!("/api/pages/{}/html", page_id) }
         }
     });
     

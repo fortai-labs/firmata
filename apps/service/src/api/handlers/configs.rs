@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
+use tracing::{info, error, debug, instrument};
 
 use crate::application::scraper::service::ScraperService;
 use crate::domain::scraper_config::ScraperConfig;
@@ -42,10 +43,13 @@ pub struct ListConfigsQuery {
     offset: Option<i64>,
 }
 
+#[instrument(skip(state, payload), fields(config_name = %payload.name, base_url = %payload.base_url))]
 pub async fn create_config(
     State(state): State<AppState>,
     Json(payload): Json<CreateConfigRequest>,
 ) -> Result<(StatusCode, Json<ConfigResponse>), AppError> {
+    info!("Creating new scraper config: {}", payload.name);
+    
     // Create a new config from the request
     let mut config = ScraperConfig::new(
         payload.name,
@@ -65,6 +69,8 @@ pub async fn create_config(
     config.schedule = payload.schedule;
     config.headers = payload.headers.unwrap_or_else(|| serde_json::json!({}));
     config.active = true;
+    
+    debug!("Inserting config into database with id: {}", config.id);
     
     // Insert into database
     let config_id = sqlx::query!(
@@ -99,8 +105,13 @@ pub async fn create_config(
     )
     .fetch_one(&state.db_pool)
     .await
-    .map_err(AppError::from)?
+    .map_err(|e| {
+        error!("Failed to insert config: {}", e);
+        AppError::from(e)
+    })?
     .id;
+    
+    info!("Successfully created config with id: {}", config_id);
     
     // Create HATEOAS links
     let links = serde_json::json!({
@@ -115,12 +126,15 @@ pub async fn create_config(
     })))
 }
 
+#[instrument(skip(state), fields(limit = %params.limit.unwrap_or(10), offset = %params.offset.unwrap_or(0)))]
 pub async fn list_configs(
     State(state): State<AppState>,
     Query(params): Query<ListConfigsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(10);
     let offset = params.offset.unwrap_or(0);
+    
+    debug!("Listing configs with limit: {}, offset: {}", limit, offset);
     
     let configs = sqlx::query_as!(
         ScraperConfig,
@@ -140,7 +154,12 @@ pub async fn list_configs(
     )
     .fetch_all(&state.db_pool)
     .await
-    .map_err(AppError::from)?;
+    .map_err(|e| {
+        error!("Failed to fetch configs: {}", e);
+        AppError::from(e)
+    })?;
+    
+    info!("Retrieved {} configs", configs.len());
     
     let response = serde_json::json!({
         "configs": configs,
@@ -152,10 +171,13 @@ pub async fn list_configs(
     Ok(Json(response))
 }
 
+#[instrument(skip(state), fields(config_id = %id))]
 pub async fn get_config(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ConfigResponse>, AppError> {
+    debug!("Fetching config with id: {}", id);
+    
     let config = sqlx::query_as!(
         ScraperConfig,
         r#"
@@ -172,8 +194,16 @@ pub async fn get_config(
     )
     .fetch_optional(&state.db_pool)
     .await
-    .map_err(AppError::from)?
-    .ok_or_else(|| AppError::NotFound(format!("Config not found: {}", id)))?;
+    .map_err(|e| {
+        error!("Database error when fetching config {}: {}", id, e);
+        AppError::from(e)
+    })?
+    .ok_or_else(|| {
+        error!("Config not found: {}", id);
+        AppError::NotFound(format!("Config not found: {}", id))
+    })?;
+    
+    debug!("Found config: {} ({})", config.name, config.id);
     
     // Create HATEOAS links
     let links = serde_json::json!({
@@ -188,11 +218,14 @@ pub async fn get_config(
     }))
 }
 
+#[instrument(skip(state, payload), fields(config_id = %id, config_name = %payload.name))]
 pub async fn update_config(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(payload): Json<CreateConfigRequest>,
 ) -> Result<Json<ConfigResponse>, AppError> {
+    info!("Updating config: {}", id);
+    
     // Get the existing config
     let mut config = sqlx::query_as!(
         ScraperConfig,
@@ -210,8 +243,16 @@ pub async fn update_config(
     )
     .fetch_optional(&state.db_pool)
     .await
-    .map_err(AppError::from)?
-    .ok_or_else(|| AppError::NotFound(format!("Config not found: {}", id)))?;
+    .map_err(|e| {
+        error!("Database error when fetching config for update {}: {}", id, e);
+        AppError::from(e)
+    })?
+    .ok_or_else(|| {
+        error!("Config not found for update: {}", id);
+        AppError::NotFound(format!("Config not found: {}", id))
+    })?;
+    
+    debug!("Found config to update: {} ({})", config.name, config.id);
     
     // Update fields
     config.name = payload.name;
@@ -229,6 +270,8 @@ pub async fn update_config(
     config.headers = payload.headers.unwrap_or(config.headers);
     config.updated_at = chrono::Utc::now();
     config.active = true;
+    
+    debug!("Updating config in database: {}", config.id);
     
     // Update in database
     sqlx::query!(
@@ -261,7 +304,12 @@ pub async fn update_config(
     )
     .execute(&state.db_pool)
     .await
-    .map_err(AppError::from)?;
+    .map_err(|e| {
+        error!("Failed to update config {}: {}", id, e);
+        AppError::from(e)
+    })?;
+    
+    info!("Successfully updated config: {}", config.id);
     
     // Create HATEOAS links
     let links = serde_json::json!({
@@ -276,16 +324,22 @@ pub async fn update_config(
     }))
 }
 
+#[instrument(skip(state), fields(config_id = %id))]
 pub async fn start_job(
     State(state): State<crate::api::routes::AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    info!("Starting job for config: {}", id);
+    
     let job = state.scraper_service.create_job(id).await.map_err(|e| {
+        error!("Failed to create job for config {}: {:?}", id, e);
         match e.downcast::<AppError>() {
             Ok(app_error) => app_error,
             Err(other) => AppError::Internal(other.to_string()),
         }
     })?;
+    
+    info!("Successfully created job {} for config {}", job.id, id);
     
     let response = serde_json::json!({
         "job_id": job.id,

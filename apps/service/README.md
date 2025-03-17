@@ -123,19 +123,20 @@ The service is deployed as a Docker container. The deployment process:
 - `GET /api/configs/{id}` - Get a specific scraper configuration
 - `PUT /api/configs/{id}` - Update a scraper configuration
 - `DELETE /api/configs/{id}` - Delete a scraper configuration
-- `POST /api/configs/{id}/jobs` - Start a new job for a configuration
+- `POST /api/configs/{id}/start` - Start a new job for a configuration
 
 ### Jobs
 
 - `GET /api/jobs` - List all jobs
 - `GET /api/jobs/{id}` - Get a specific job
-- `DELETE /api/jobs/{id}` - Cancel a job
+- `POST /api/jobs/{id}/cancel` - Cancel a job
 
 ### Pages
 
-- `GET /api/jobs/{job_id}/pages` - List all pages for a job
+- `GET /api/pages` - List all pages (can filter by job_id query parameter)
 - `GET /api/pages/{id}` - Get a specific page
-- `GET /api/pages/{id}/content` - Get the content of a page
+- `GET /api/pages/{id}/html` - Get the content of a page
+- `GET /api/pages/{id}/markdown` - Get the markdown content of a page
 
 ### Webhooks
 

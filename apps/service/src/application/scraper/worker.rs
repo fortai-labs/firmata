@@ -9,6 +9,8 @@ use tracing::{info, error, warn, debug};
 use uuid::Uuid;
 use serde_json;
 use chrono::Utc;
+use redis::AsyncCommands;
+use reqwest;
 
 use crate::domain::job::{Job, JobStatus};
 use crate::domain::page::Page;
@@ -64,16 +66,25 @@ impl ScraperWorker {
         
         while self.running {
             // Try to get a job from the queue
-            match self.job_queue.dequeue::<String>("jobs").await {
-                Ok(Some((job_id, _))) => {
-                    info!("Processing job: {}", job_id);
+            match self.job_queue.dequeue::<String>("scraper_jobs").await {
+                Ok(Some((job_id_str, job_data))) => {
+                    info!("Processing job: {}", job_id_str);
+                    
+                    // Parse the job ID string to UUID
+                    let job_id = match Uuid::parse_str(&job_id_str) {
+                        Ok(uuid) => uuid,
+                        Err(e) => {
+                            error!("Invalid job ID format: {}", e);
+                            continue;
+                        }
+                    };
                     
                     // Process the job
-                    if let Err(e) = self.process_job(Uuid::parse_str(&job_id).unwrap()).await {
+                    if let Err(e) = self.process_job(job_id).await {
                         error!("Error processing job {}: {}", job_id, e);
                         
                         // Mark the job as failed
-                        if let Err(mark_err) = self.mark_job_failed(Uuid::parse_str(&job_id).unwrap(), &e.to_string()).await {
+                        if let Err(mark_err) = self.mark_job_failed(job_id, &e.to_string()).await {
                             error!("Error marking job {} as failed: {}", job_id, mark_err);
                         }
                     }
@@ -105,6 +116,12 @@ impl ScraperWorker {
         // Check if the job is already completed or failed
         if job.status == JobStatus::Completed || job.status == JobStatus::Failed {
             warn!("Job {} is already in terminal state: {:?}", job_id, job.status);
+            
+            // Complete the job in Redis to remove it from the processing list
+            if let Err(e) = self.job_queue.complete("scraper_jobs", &job_id.to_string()).await {
+                error!("Error completing job {} in Redis: {}", job_id, e);
+            }
+            
             return Ok(());
         }
         
@@ -150,18 +167,26 @@ impl ScraperWorker {
                     page.job_id = job_id;
                     
                     // Store the HTML content
-                    if let Ok(html_path) = self.store_content(&page, "html").await {
-                        page.html_storage_path = Some(html_path);
-                    }
-                    
-                    // Convert HTML to Markdown and store it
-                    if page.error_message.is_none() {
-                        if let Ok(markdown) = self.convert_to_markdown(&page).await {
-                            if let Ok(markdown_path) = self.store_markdown(&page, &markdown).await {
-                                page.markdown_storage_path = Some(markdown_path);
+                    if page.html_content.is_some() {
+                        if let Ok(html_path) = self.store_content(&page, "html").await {
+                            page.html_storage_path = Some(html_path);
+                            
+                            // Convert HTML to Markdown and store it
+                            if page.error_message.is_none() {
+                                // Use the HTML content directly from the page object
+                                if let Some(html_content) = &page.html_content {
+                                    if let Ok(markdown) = self.convert_html_to_markdown(html_content, &page.url).await {
+                                        if let Ok(markdown_path) = self.store_markdown(&page, &markdown).await {
+                                            page.markdown_storage_path = Some(markdown_path);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
+                    
+                    // Clear the HTML content before saving to the database
+                    page.html_content = None;
                     
                     // Save the page to the database
                     if let Err(e) = self.save_page(&page).await {
@@ -203,6 +228,7 @@ impl ScraperWorker {
                         error_message: Some(e.to_string()),
                         depth,
                         parent_url,
+                        html_content: None,
                     };
                     
                     // Save the page to the database
@@ -224,32 +250,75 @@ impl ScraperWorker {
         // Mark the job as completed
         self.mark_job_completed(&mut job).await?;
         
+        // Complete the job in Redis to remove it from the processing list
+        debug!("Attempting to complete job {} in Redis queue", job_id);
+        match self.job_queue.complete("scraper_jobs", &job_id.to_string()).await {
+            Ok(_) => {
+                debug!("Successfully completed job {} in Redis queue", job_id);
+            },
+            Err(e) => {
+                error!("Error completing job {} in Redis: {}", job_id, e);
+                
+                // Try to verify if the job is still in the processing list
+                if let Ok(mut conn) = self.job_queue.get_connection().await {
+                    let processing_key = format!("processing:{}", "scraper_jobs");
+                    if let Ok(items) = conn.lrange::<_, Vec<String>>(&processing_key, 0, -1).await {
+                        debug!("Current items in processing list: {:?}", items);
+                        let job_id_str = job_id.to_string();
+                        if items.contains(&job_id_str) {
+                            debug!("Job {} is still in the processing list after completion attempt", job_id);
+                            // Try one more time with explicit LREM command
+                            let mut pipe = redis::pipe();
+                            pipe.cmd("LREM").arg(&processing_key).arg(0).arg(&job_id_str);
+                            
+                            if let Err(e) = pipe.query_async::<()>(&mut conn).await {
+                                error!("Failed to manually remove job from processing list: {}", e);
+                            } else {
+                                debug!("Manually removed job {} from processing list", job_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         info!("Job {} completed, crawled {} pages", job_id, crawled_urls.len());
         Ok(())
     }
     
     async fn store_content(&self, page: &Page, content_type: &str) -> Result<String> {
-        // Get the HTML content from the page URL
-        let content = match content_type {
-            "html" => {
-                // The HTML content is already fetched by the crawler
-                // This would be passed from the crawler in a real implementation
-                "".to_string()
-            },
-            _ => return Err(AppError::InvalidInput(format!("Invalid content type: {}", content_type)).into()),
-        };
-        
-        // Generate a storage path
-        let storage_path = format!("jobs/{}/pages/{}/{}.{}", 
-                                  page.job_id, 
-                                  page.id,
-                                  content_type,
-                                  content_type);
-        
-        // Store the content
-        self.storage_client.upload_html(&page.job_id, &page.url, &content).await?;
-        
-        Ok(storage_path)
+        if content_type == "html" {
+            // Check if there was an error crawling the page
+            if let Some(error) = &page.error_message {
+                // If there was an error, we can't store the content
+                debug!("Cannot store content for page with error: {}", error);
+                return Err(AppError::InvalidInput(format!("Cannot store content for page with error: {}", error)).into());
+            }
+            
+            // Get the HTML content from the Page object
+            if let Some(html_content) = &page.html_content {
+                // Store the HTML content in S3 and return the path from the S3 client
+                debug!("Attempting to upload HTML content for URL: {}", page.url);
+                match self.storage_client.upload_html(&page.job_id, &page.url, html_content).await {
+                    Ok(path) => {
+                        debug!("Successfully uploaded HTML content to path: {}", path);
+                        Ok(path)
+                    },
+                    Err(e) => {
+                        error!("Failed to upload HTML content: {}", e);
+                        Err(e)
+                    }
+                }
+            } else {
+                // If there's no HTML content, we can't store it
+                debug!("Page has no HTML content: {}", page.url);
+                Err(AppError::InvalidInput("Page has no HTML content".to_string()).into())
+            }
+        } else {
+            // For other content types, we'll just return a placeholder path
+            debug!("Unsupported content type: {}", content_type);
+            Err(AppError::InvalidInput(format!("Unsupported content type: {}", content_type)).into())
+        }
     }
     
     async fn convert_html_to_markdown(&self, html_content: &str, url: &str) -> Result<String> {
@@ -261,24 +330,32 @@ impl ScraperWorker {
     }
     
     async fn convert_to_markdown(&self, page: &Page) -> Result<String> {
-        // Get the HTML content
-        let html_path = page.html_storage_path.as_ref()
-            .ok_or_else(|| AppError::InvalidInput("Page has no HTML storage path".to_string()))?;
-        
-        let html_content = self.storage_client.get_object(html_path).await?;
-        
-        // Convert HTML to Markdown
-        self.convert_html_to_markdown(&html_content, &page.url).await
+        // If the page has an HTML storage path, we need to get the HTML content from storage
+        if let Some(html_path) = &page.html_storage_path {
+            // Get the HTML content from storage
+            let html_content = self.storage_client.get_object(html_path).await?;
+            
+            // Convert HTML to Markdown
+            self.convert_html_to_markdown(&html_content, &page.url).await
+        } else {
+            // If there's no HTML storage path, we can't convert to Markdown
+            Err(AppError::InvalidInput("Page has no HTML storage path".to_string()).into())
+        }
     }
     
     async fn store_markdown(&self, page: &Page, markdown: &str) -> Result<String> {
-        // Generate a storage path
-        let storage_path = format!("jobs/{}/pages/{}/markdown.md", page.job_id, page.id);
-        
-        // Store the content
-        self.storage_client.upload_markdown(&page.job_id, &page.url, &markdown).await?;
-        
-        Ok(storage_path)
+        // Store the content and return the path from the S3 client
+        debug!("Attempting to upload Markdown content for URL: {}", page.url);
+        match self.storage_client.upload_markdown(&page.job_id, &page.url, &markdown).await {
+            Ok(path) => {
+                debug!("Successfully uploaded Markdown content to path: {}", path);
+                Ok(path)
+            },
+            Err(e) => {
+                error!("Failed to upload Markdown content: {}", e);
+                Err(e)
+            }
+        }
     }
     
     async fn save_page(&self, page: &Page) -> Result<()> {
@@ -372,8 +449,16 @@ impl ScraperWorker {
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Job with ID {} not found", job_id)))?;
 
-        let status_int: i32 = row.get("status");
-        let status = JobStatus::try_from(status_int).unwrap_or(JobStatus::Unknown);
+        // Parse the status string to JobStatus enum
+        let status_str: String = row.get("status");
+        let status = match status_str.to_lowercase().as_str() {
+            "pending" => JobStatus::Pending,
+            "running" => JobStatus::Running,
+            "completed" => JobStatus::Completed,
+            "failed" => JobStatus::Failed,
+            "cancelled" => JobStatus::Cancelled,
+            _ => JobStatus::Unknown,
+        };
 
         Ok(Job {
             id: row.get("id"),
@@ -443,7 +528,7 @@ impl ScraperWorker {
             WHERE id = $5
             "#
         )
-        .bind(JobStatus::Running as i32)
+        .bind("running")
         .bind(now)
         .bind(now)
         .bind(worker_id)
@@ -471,7 +556,7 @@ impl ScraperWorker {
             WHERE id = $4
             "#
         )
-        .bind(JobStatus::Completed as i32)
+        .bind("completed")
         .bind(now)
         .bind(now)
         .bind(job.id)
@@ -497,7 +582,7 @@ impl ScraperWorker {
             WHERE id = $5
             "#
         )
-        .bind(JobStatus::Failed as i32)
+        .bind("failed")
         .bind(error_message)
         .bind(now)
         .bind(now)
